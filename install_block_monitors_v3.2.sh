@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# OpenVPN 불필요 서비스 중지
+systemctl stop openvpn
+systemctl disable openvpn
+systemctl stop openvpn-server@server
+systemctl disable openvpn-server@server
+
 # 1. 디렉토리 생성
 mkdir -p /home/script/logs
 
