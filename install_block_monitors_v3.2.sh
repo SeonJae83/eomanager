@@ -11,7 +11,7 @@ EXCLUDED_IP="59.14.186.184"
 ACCESS_LOG="/dante/dante.log"
 SESSION_DIR="/var/run/dante_sessions"
 SESSION_TIMEOUT=300
-BLOCK_DURATION=60
+BLOCK_DURATION=300
 LOG_DIR="/home/script/logs"
 BLOCK_LOG="$LOG_DIR/ip_blocked.log"
 LOG_FILE="$LOG_DIR/dante_debug.log"
@@ -70,7 +70,7 @@ LOG_DIR="/home/script/logs"
 LOG_FILE="$LOG_DIR/squid_debug.log"
 BLOCK_LOG="$LOG_DIR/ip_blocked.log"
 SESSION_TIMEOUT=300
-BLOCK_DURATION=60
+BLOCK_DURATION=300
 
 mkdir -p "$SESSION_DIR" "$LOG_DIR"
 touch "$BLOCK_LOG" "$LOG_FILE"
