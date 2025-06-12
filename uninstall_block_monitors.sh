@@ -22,5 +22,3 @@ rm -rf /home/script/lock-list.sh
 rm -rf /home/script/unlock-ip.sh
 rm -rf /home/script/uninstall_block_monitors.sh
 
-# 5. 로그디렉토리 삭제 
-rm -rf /home/script/logs
