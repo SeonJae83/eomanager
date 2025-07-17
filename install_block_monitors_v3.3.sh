@@ -26,7 +26,7 @@ for LOG in /dante/ens*_access.log; do
       if echo "$line" | grep -q "username%.*@" && echo "$line" | grep -q "pass(1): tcp/connect"; then
         USER=$(echo "$line" | grep -oP 'username%\K[^@]+')
         IP_WITH_PORT=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.]+(\.[0-9]+)?')
-        IP=$(echo "$IP_WITH_PORT" | cut -d. -f1-4)
+        IP=$(echo "$IP_WITH_PORT" | grep -oP '^[0-9]+(\.[0-9]+){3}')
         [[ -z "$USER" || -z "$IP" ]] && continue
 
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
@@ -77,7 +77,7 @@ for LOG in /var/log/squid/ens*_access.log; do
     tail -Fn0 "$LOG" | while read -r line; do
       if echo "$line" | grep -q "TCP_TUNNEL/200"; then
         IP_WITH_PORT=$(echo "$line" | awk '{print $3}')
-        IP=$(echo "$IP_WITH_PORT" | cut -d. -f1-4)
+        IP=$(echo "$IP_WITH_PORT" | grep -oP '^[0-9]+(\.[0-9]+){3}')
         USER=$(echo "$line" | awk '{print $8}')
         [[ -z "$USER" || -z "$IP" ]] && continue
 
@@ -105,7 +105,6 @@ done
 
 wait
 EOF
-
 # 4. 기타 유틸리티 스크립트들
 cat << 'EOF' > /home/script/lock-list.sh
 #!/bin/bash
