@@ -135,6 +135,7 @@ EOF
 # 4. 권한 부여
 chmod +x /home/script/*.sh
 
+
 # 5. 서비스 유지
 systemctl daemon-reload
 systemctl enable squid-ip-monitor.service
@@ -142,7 +143,41 @@ systemctl restart squid-ip-monitor.service
 systemctl enable dante-ip-monitor.service
 systemctl restart dante-ip-monitor.service
 
-# 6. logrotate 설정
+# 6. systemd 서비스 등록
+cat << EOF | tee /etc/systemd/system/squid-ip-monitor.service > /dev/null
+[Unit]
+Description=Squid IP Duplicate Session Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/script/squid-ip-block-monitor.sh
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat << EOF | tee /etc/systemd/system/dante-ip-monitor.service > /dev/null
+[Unit]
+Description=Dante IP Duplicate Session Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/script/dante-ip-block-monitor.sh
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+# 7. logrotate 설정
 cat << EOF | tee /etc/logrotate.d/block-monitor > /dev/null
 /home/script/logs/*.log {
     daily
