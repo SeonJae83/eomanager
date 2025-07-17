@@ -131,6 +131,8 @@ done
 
 wait
 EOF
+# 4. 기타 스크립트 
+
 
 # 4. 권한 부여
 chmod +x /home/script/*.sh
