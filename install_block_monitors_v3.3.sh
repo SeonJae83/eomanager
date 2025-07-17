@@ -51,7 +51,7 @@ for LOG in /dante/ens*_access.log; do
               iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
               echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
               echo "$IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-              echo "$(date) [ACTION] IP $IP blocked on $IFACE (user=$USER)" >> "$LOG_FILE"
+              echo "$(date) [ACTION] IP $OLD_IP blocked on $IFACE (user=$USER)" >> "$LOG_FILE"
             fi
           fi
         fi
@@ -114,7 +114,7 @@ for LOG in /var/log/squid/ens*_access.log; do
               iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
               echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
               echo "$IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-              echo "$(date) [ACTION] IP $IP blocked on $IFACE (user=$USER)" >> "$LOG_FILE"
+              echo "$(date) [ACTION] IP $OLD_IP blocked on $IFACE (user=$USER)" >> "$LOG_FILE"
             fi
           fi
         fi
