@@ -42,9 +42,8 @@ for LOG in /dante/ens*_access.log; do
           [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
 
           if [[ "$OLD_IP" != "$IP" ]]; then
-            ELAPSED=$((NOW - LAST_SEEN))
-            if [[ "$ELAPSED" -lt "$SESSION_TIMEOUT" ]]; then
-              if iptables -L INPUT -n | grep -E "DROP" | grep -q "$IP"; then
+            if [[ "$OLD_IP" != "$EXCLUDED_IP" ]]; then
+              if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
                 echo "$(date) [INFO] Already dropped IP $IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
                 continue
               fi
@@ -106,9 +105,8 @@ for LOG in /var/log/squid/ens*_access.log; do
           [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
 
           if [[ "$OLD_IP" != "$IP" ]]; then
-            ELAPSED=$((NOW - LAST_SEEN))
-            if [[ "$ELAPSED" -lt "$SESSION_TIMEOUT" ]]; then
-              if iptables -L INPUT -n | grep -E "DROP" | grep -q "$IP"; then
+            if [[ "$OLD_IP" != "$EXCLUDED_IP" ]]; then
+              if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
                 echo "$(date) [INFO] Already dropped IP $IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
                 continue
               fi
