@@ -132,27 +132,33 @@ EOF
 # 4. 기타 스크립트 
 cat << 'EOF' > /home/script/lock-list.sh
 #!/bin/bash
+
 BLOCK_LOG="/home/script/logs/ip_blocked.log"
 
-sudo iptables -S INPUT | grep "^-A INPUT" | grep " -j DROP" | while read -r line; do
-    IP=$(echo "$line" | grep -oP "-s \K[0-9.]+")
-    IFACE=$(echo "$line" | grep -oP "-i \K[^ ]+")
+for IP in $(sudo iptables -S INPUT | grep "^-A INPUT -s" | grep " -j DROP" | awk '{print $4}' | sed 's#/32##'); do
     USER=$(grep "^$IP|" "$BLOCK_LOG" 2>/dev/null | tail -n1 | cut -d'|' -f2)
     [[ -z "$USER" ]] && USER="unknown"
 
+    IFACE=$(grep "^$IP|" "$BLOCK_LOG" 2>/dev/null | tail -n1 | cut -d'|' -f3)
+    [[ -z "$IFACE" ]] && IFACE="unknown"
+
     JOB_LINE=""
-    while IFS= read -r job; do
-        JOB_ID=$(echo "$job" | awk '{print $1}')
-        if at -c "$JOB_ID" 2>/dev/null | grep -q "$IP"; then
-            JOB_LINE="$job"
+    while IFS= read -r line; do
+        JOB_ID=$(echo "$line" | awk '{print $1}')
+        if at -c "$JOB_ID" 2>/dev/null | grep -q -- "-s $IP"; then
+            JOB_LINE="$line"
             break
         fi
     done < <(atq)
 
-    echo "$IP | $USER | $IFACE | ${JOB_LINE:-no at job}"
+    if [[ -n "$JOB_LINE" ]]; then
+        echo "$IP | $USER | $JOB_LINE | $IFACE"
+    else
+        echo "$IP | $USER | (no at job) | $IFACE"
+    fi
 done
-
 EOF
+
 
 cat << 'EOF' > /home/script/unlock-ip.sh
 #!/bin/bash
