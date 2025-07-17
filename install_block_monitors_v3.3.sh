@@ -43,8 +43,8 @@ for LOG in /dante/ens*_access.log; do
 
           if [[ "$OLD_IP" != "$IP" ]]; then
             if [[ "$OLD_IP" != "$EXCLUDED_IP" ]]; then
-              if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
-                echo "$(date) [INFO] Already dropped IP $IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
+              if iptables -L INPUT -n | grep -q "$OLD_IP"; then
+                echo "$(date) [INFO] Already dropped IP $OLD_IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
                 continue
               fi
               [[ "$IP" == "$EXCLUDED_IP" ]] && continue
@@ -106,8 +106,8 @@ for LOG in /var/log/squid/ens*_access.log; do
 
           if [[ "$OLD_IP" != "$IP" ]]; then
             if [[ "$OLD_IP" != "$EXCLUDED_IP" ]]; then
-              if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
-                echo "$(date) [INFO] Already dropped IP $IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
+              if iptables -L INPUT -n | grep -q "$OLD_IP"; then
+                echo "$(date) [INFO] Already dropped IP $OLD_IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
                 continue
               fi
               [[ "$IP" == "$EXCLUDED_IP" ]] && continue
