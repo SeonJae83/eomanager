@@ -132,20 +132,79 @@ done
 wait
 EOF
 # 4. 기타 스크립트 
+cat << 'EOF' > /home/script/lock-list.sh
+#!/bin/bash
+BLOCK_LOG="/home/script/logs/ip_blocked.log"
 
+sudo iptables -S INPUT | grep "^-A INPUT" | grep " -j DROP" | while read -r line; do
+    IP=$(echo "$line" | grep -oP "-s \K[0-9.]+")
+    IFACE=$(echo "$line" | grep -oP "-i \K[^ ]+")
+    USER=$(grep "^$IP|" "$BLOCK_LOG" 2>/dev/null | tail -n1 | cut -d'|' -f2)
+    [[ -z "$USER" ]] && USER="unknown"
 
-# 4. 권한 부여
+    JOB_LINE=""
+    while IFS= read -r job; do
+        JOB_ID=$(echo "$job" | awk '{print $1}')
+        if at -c "$JOB_ID" 2>/dev/null | grep -q "$IP"; then
+            JOB_LINE="$job"
+            break
+        fi
+    done < <(atq)
+
+    echo "$IP | $USER | $IFACE | ${JOB_LINE:-no at job}"
+done
+
+EOF
+
+cat << 'EOF' > /home/script/unlock-ip.sh
+#!/bin/bash
+BLOCK_LOG="/home/script/logs/ip_blocked.log"
+
+if [[ -z "$1" ]]; then
+  echo "Usage: $0 <IP_ADDRESS>"
+  exit 1
+fi
+
+IP="$1"
+echo "Unblocking IP: $IP"
+
+IFACES=$(grep "^$IP|" "$BLOCK_LOG" | cut -d'|' -f3 | sort -u)
+
+if [[ -z "$IFACES" ]]; then
+  echo "[WARN] No interface found for $IP in $BLOCK_LOG"
+else
+  for IFACE in $IFACES; do
+    sudo iptables -D INPUT -i "$IFACE" -s "$IP" -j DROP && \
+      echo "Removed $IP from iptables DROP rules on $IFACE"
+  done
+fi
+
+for JOB in $(atq | awk '{print $1}'); do
+  if sudo at -c "$JOB" | grep -q "$IP"; then
+    sudo atrm "$JOB" && echo "Removed scheduled at job: $JOB"
+  fi
+done
+
+if [[ -f "$BLOCK_LOG" ]]; then
+  TMP_FILE=$(mktemp)
+  grep -v "^$IP|" "$BLOCK_LOG" > "$TMP_FILE" && mv "$TMP_FILE" "$BLOCK_LOG"
+  echo "Removed $IP entry from block log."
+fi
+
+EOF
+
+# 5. 권한 부여
 chmod +x /home/script/*.sh
 
 
-# 5. 서비스 유지
+# 6. 서비스 유지
 systemctl daemon-reload
 systemctl enable squid-ip-monitor.service
 systemctl restart squid-ip-monitor.service
 systemctl enable dante-ip-monitor.service
 systemctl restart dante-ip-monitor.service
 
-# 6. systemd 서비스 등록
+# 7. systemd 서비스 등록
 cat << EOF | tee /etc/systemd/system/squid-ip-monitor.service > /dev/null
 [Unit]
 Description=Squid IP Duplicate Session Monitor
@@ -179,7 +238,7 @@ WantedBy=multi-user.target
 EOF
 
 
-# 7. logrotate 설정
+# 8. logrotate 설정
 cat << EOF | tee /etc/logrotate.d/block-monitor > /dev/null
 /home/script/logs/*.log {
     daily
