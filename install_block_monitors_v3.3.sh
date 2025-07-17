@@ -34,16 +34,17 @@ for LOG in /dante/ens*_access.log; do
 
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
 
+        echo "[DEBUG] $USER on $IFACE: last=$(cat "$LAST_IP_FILE" 2>/dev/null), current=$IP" >> "$LOG_FILE"
+
         if [[ -f "$LAST_IP_FILE" ]]; then
           OLD_IP=$(cat "$LAST_IP_FILE")
           if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
-            if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
+            iptables -C INPUT -i "$IFACE" -s "$OLD_IP" -j DROP 2>/dev/null || {
               iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
               echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
               echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP_WITH_PORT (user=$USER)" >> "$LOG_FILE"
-              continue
-            fi
+              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login IP=$IP (raw=$IP_WITH_PORT) (user=$USER)" >> "$LOG_FILE"
+            }
           fi
         fi
 
@@ -89,16 +90,17 @@ for LOG in /var/log/squid/ens*_access.log; do
 
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
 
+        echo "[DEBUG] $USER on $IFACE: last=$(cat "$LAST_IP_FILE" 2>/dev/null), current=$IP" >> "$LOG_FILE"
+
         if [[ -f "$LAST_IP_FILE" ]]; then
           OLD_IP=$(cat "$LAST_IP_FILE")
           if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
-            if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
+            iptables -C INPUT -i "$IFACE" -s "$OLD_IP" -j DROP 2>/dev/null || {
               iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
               echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
               echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP_WITH_PORT (user=$USER)" >> "$LOG_FILE"
-              continue
-            fi
+              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login IP=$IP (raw=$IP_WITH_PORT) (user=$USER)" >> "$LOG_FILE"
+            }
           fi
         fi
 
