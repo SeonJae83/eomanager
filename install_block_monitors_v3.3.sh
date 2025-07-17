@@ -25,7 +25,8 @@ for LOG in /dante/ens*_access.log; do
     tail -Fn0 "$LOG" | while read line; do
       if echo "$line" | grep -q "username%.*@" && echo "$line" | grep -q "pass(1): tcp/connect"; then
         USER=$(echo "$line" | grep -oP 'username%\K[^@]+')
-        IP=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.]+')
+        IP_WITH_PORT=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.]+(\.[0-9]+)?')
+        IP=$(echo "$IP_WITH_PORT" | cut -d. -f1-4)
         [[ -z "$USER" || -z "$IP" ]] && continue
 
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
@@ -37,14 +38,14 @@ for LOG in /dante/ens*_access.log; do
               iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
               echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
               echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP (user=$USER)" >> "$LOG_FILE"
+              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP_WITH_PORT (user=$USER)" >> "$LOG_FILE"
               continue
             fi
           fi
         fi
 
         echo "$IP" > "$LAST_IP_FILE"
-        echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP, iface=$IFACE" >> "$LOG_FILE"
+        echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP_WITH_PORT, iface=$IFACE" >> "$LOG_FILE"
       fi
     done
   ) &
@@ -75,7 +76,8 @@ for LOG in /var/log/squid/ens*_access.log; do
   (
     tail -Fn0 "$LOG" | while read -r line; do
       if echo "$line" | grep -q "TCP_TUNNEL/200"; then
-        IP=$(echo "$line" | awk '{print $3}')
+        IP_WITH_PORT=$(echo "$line" | awk '{print $3}')
+        IP=$(echo "$IP_WITH_PORT" | cut -d. -f1-4)
         USER=$(echo "$line" | awk '{print $8}')
         [[ -z "$USER" || -z "$IP" ]] && continue
 
@@ -88,14 +90,14 @@ for LOG in /var/log/squid/ens*_access.log; do
               iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
               echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
               echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP (user=$USER)" >> "$LOG_FILE"
+              echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP_WITH_PORT (user=$USER)" >> "$LOG_FILE"
               continue
             fi
           fi
         fi
 
         echo "$IP" > "$LAST_IP_FILE"
-        echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP, iface=$IFACE" >> "$LOG_FILE"
+        echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP_WITH_PORT, iface=$IFACE" >> "$LOG_FILE"
       fi
     done
   ) &
