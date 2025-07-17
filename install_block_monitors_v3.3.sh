@@ -197,14 +197,7 @@ EOF
 chmod +x /home/script/*.sh
 
 
-# 6. 서비스 유지
-systemctl daemon-reload
-systemctl enable squid-ip-monitor.service
-systemctl restart squid-ip-monitor.service
-systemctl enable dante-ip-monitor.service
-systemctl restart dante-ip-monitor.service
-
-# 7. systemd 서비스 등록
+# 6. systemd 서비스 등록
 cat << EOF | tee /etc/systemd/system/squid-ip-monitor.service > /dev/null
 [Unit]
 Description=Squid IP Duplicate Session Monitor
@@ -236,6 +229,13 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# 7. 서비스 유지
+systemctl daemon-reload
+systemctl enable squid-ip-monitor.service
+systemctl restart squid-ip-monitor.service
+systemctl enable dante-ip-monitor.service
+systemctl restart dante-ip-monitor.service
 
 
 # 8. logrotate 설정
