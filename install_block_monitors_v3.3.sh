@@ -27,8 +27,8 @@ for LOG in /dante/ens*_access.log; do
     tail -Fn0 "$LOG" | while read line; do
       if echo "$line" | grep -q "username%.*@" && echo "$line" | grep -q "pass(1): tcp/connect"; then
         USER=$(echo "$line" | grep -oP 'username%\K[^@]+')
-        IP_FULL=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.]+(:[0-9]+)?')
-        IP=$(echo "$IP_FULL" | cut -d: -f1)
+        IP_FULL=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.:]+')
+        IP=$(echo "$IP_FULL" | sed -E 's/[:.][0-9]+$//')
         NOW=$(date +%s)
 
         [[ -z "$USER" || -z "$IP" ]] && continue
@@ -40,7 +40,7 @@ for LOG in /dante/ens*_access.log; do
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
             OLD_IP_RAW=$(cat "$LAST_IP_FILE")
-            OLD_IP=$(echo "$OLD_IP_RAW" | cut -d: -f1)
+            OLD_IP=$(echo "$OLD_IP_RAW" | sed -E 's/[:.][0-9]+$//')
             [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
 
             if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
@@ -96,7 +96,7 @@ for LOG in /var/log/squid/ens*_access.log; do
     tail -Fn0 "$LOG" | while read -r line; do
       if echo "$line" | grep -q "TCP_TUNNEL/200"; then
         IP_RAW=$(echo "$line" | awk '{print $3}')
-        IP=$(echo "$IP_RAW" | cut -d: -f1)
+        IP=$(echo "$IP_RAW" | sed -E 's/[:.][0-9]+$//')
         USER=$(echo "$line" | awk '{print $8}')
         NOW=$(date +%s)
 
@@ -109,7 +109,7 @@ for LOG in /var/log/squid/ens*_access.log; do
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
             OLD_IP_RAW=$(cat "$LAST_IP_FILE")
-            OLD_IP=$(echo "$OLD_IP_RAW" | cut -d: -f1)
+            OLD_IP=$(echo "$OLD_IP_RAW" | sed -E 's/[:.][0-9]+$//')
             [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
 
             if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
