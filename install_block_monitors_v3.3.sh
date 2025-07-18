@@ -39,7 +39,8 @@ for LOG in /dante/ens*_access.log; do
 
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
-            OLD_IP=$(cat "$LAST_IP_FILE" | cut -d: -f1)
+            OLD_IP_RAW=$(cat "$LAST_IP_FILE")
+            OLD_IP=$(echo "$OLD_IP_RAW" | cut -d: -f1)
             [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
 
             if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
@@ -107,7 +108,8 @@ for LOG in /var/log/squid/ens*_access.log; do
 
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
-            OLD_IP=$(cat "$LAST_IP_FILE" | cut -d: -f1)
+            OLD_IP_RAW=$(cat "$LAST_IP_FILE")
+            OLD_IP=$(echo "$OLD_IP_RAW" | cut -d: -f1)
             [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
 
             if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
