@@ -15,7 +15,6 @@ SESSION_DIR="/var/run/dante_sessions"
 LOG_DIR="/home/script/logs"
 BLOCK_LOG="$LOG_DIR/ip_blocked.log"
 LOG_FILE="$LOG_DIR/dante_debug.log"
-SESSION_TIMEOUT=300
 BLOCK_DURATION=300
 
 mkdir -p "$SESSION_DIR" "$LOG_DIR"
@@ -29,38 +28,28 @@ for LOG in /dante/ens*_access.log; do
         USER=$(echo "$line" | grep -oP 'username%\K[^@]+')
         IP_FULL=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.]+')
         IP=$(echo "$IP_FULL" | grep -oP '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
-        NOW=$(date +%s)
 
         [[ -z "$USER" || -z "$IP" ]] && continue
 
         LOCK_FILE="$SESSION_DIR/${USER}_${IFACE}.lock"
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
-        LAST_SEEN_FILE="$SESSION_DIR/${USER}_${IFACE}.last"
 
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
-            OLD_IP_RAW=$(cat "$LAST_IP_FILE")
-            OLD_IP=$(echo "$OLD_IP_RAW" | grep -oP '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
-            [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
-
+            OLD_IP=$(cat "$LAST_IP_FILE" | grep -oP '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
             if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
-              if (( NOW - LAST_SEEN > SESSION_TIMEOUT )); then
-                if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
-                  iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
-                  echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
-                  echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-                  echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP (user=$USER)" >> "$LOG_FILE"
-                else
-                  echo "$(date) [INFO] Already dropped IP $OLD_IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
-                fi
+              if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
+                iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
+                echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
+                echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
+                echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP (user=$USER)" >> "$LOG_FILE"
               else
-                echo "$(date) [INFO] IP changed recently, not blocking $OLD_IP → $IP (user=$USER)" >> "$LOG_FILE"
+                echo "$(date) [INFO] Already dropped IP $OLD_IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
               fi
             fi
           fi
 
           echo "$IP" > "$LAST_IP_FILE"
-          echo "$NOW" > "$LAST_SEEN_FILE"
           echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP, iface=$IFACE" >> "$LOG_FILE"
 
           rm -f "$LOCK_FILE"
@@ -84,7 +73,6 @@ SESSION_DIR="/var/run/squid_sessions"
 LOG_DIR="/home/script/logs"
 BLOCK_LOG="$LOG_DIR/ip_blocked.log"
 LOG_FILE="$LOG_DIR/squid_debug.log"
-SESSION_TIMEOUT=300
 BLOCK_DURATION=300
 
 mkdir -p "$SESSION_DIR" "$LOG_DIR"
@@ -99,41 +87,30 @@ for LOG in /var/log/squid/ens*_access.log; do
   (
     tail -Fn0 "$LOG" | while read -r line; do
       if echo "$line" | grep -q "CONNECT" && echo "$line" | grep -q "TCP_TUNNEL/200"; then
-        IP_RAW=$(echo "$line" | awk '{print $3}')
-        IP=$(echo "$IP_RAW" | grep -oP '([0-9]{1,3}\.){3}[0-9]{1,3}')
+        IP=$(echo "$line" | awk '{print $3}')
         USER=$(echo "$line" | awk '{print $8}')
-        NOW=$(date +%s)
 
         [[ -z "$USER" || "$USER" == "-" || -z "$IP" ]] && continue
 
         LOCK_FILE="$SESSION_DIR/${USER}_${IFACE}.lock"
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
-        LAST_SEEN_FILE="$SESSION_DIR/${USER}_${IFACE}.last"
 
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
-            OLD_IP_RAW=$(cat "$LAST_IP_FILE")
-            OLD_IP=$(echo "$OLD_IP_RAW" | grep -oP '([0-9]{1,3}\.){3}[0-9]{1,3}')
-            [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
-
+            OLD_IP=$(cat "$LAST_IP_FILE" | grep -oP '([0-9]{1,3}\.){3}[0-9]{1,3}')
             if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
-              if (( NOW - LAST_SEEN > SESSION_TIMEOUT )); then
-                if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
-                  iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
-                  echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
-                  echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
-                  echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP (user=$USER)" >> "$LOG_FILE"
-                else
-                  echo "$(date) [INFO] Already dropped IP $OLD_IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
-                fi
+              if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
+                iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
+                echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
+                echo "$OLD_IP|$USER|$IFACE|$(date +'%Y-%m-%d %H:%M:%S')" >> "$BLOCK_LOG"
+                echo "$(date) [ACTION] OLD IP $OLD_IP blocked on $IFACE due to NEW login $IP (user=$USER)" >> "$LOG_FILE"
               else
-                echo "$(date) [INFO] IP changed recently, not blocking $OLD_IP → $IP (user=$USER)" >> "$LOG_FILE"
+                echo "$(date) [INFO] Already dropped IP $OLD_IP, skip (user=$USER, iface=$IFACE)" >> "$LOG_FILE"
               fi
             fi
           fi
 
           echo "$IP" > "$LAST_IP_FILE"
-          echo "$NOW" > "$LAST_SEEN_FILE"
           echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP, iface=$IFACE" >> "$LOG_FILE"
 
           rm -f "$LOCK_FILE"
