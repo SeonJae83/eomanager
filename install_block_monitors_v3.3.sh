@@ -20,6 +20,7 @@ BLOCK_DURATION=300
 mkdir -p "$SESSION_DIR" "$LOG_DIR"
 touch "$BLOCK_LOG" "$LOG_FILE"
 
+shopt -s nullglob
 for LOG in /dante/ens*_access.log; do
   IFACE=$(basename "$LOG" | cut -d_ -f1)
   (
@@ -80,7 +81,7 @@ LOG_DIR="/home/script/logs"
 BLOCK_LOG="$LOG_DIR/ip_blocked.log"
 LOG_FILE="$LOG_DIR/squid_debug.log"
 BLOCK_DURATION=300
-
+shopt -s nullglob
 mkdir -p "$SESSION_DIR" "$LOG_DIR"
 touch "$BLOCK_LOG" "$LOG_FILE"
 
