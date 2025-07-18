@@ -33,11 +33,16 @@ for LOG in /dante/ens*_access.log; do
 
         LOCK_FILE="$SESSION_DIR/${USER}_${IFACE}.lock"
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
+        LAST_SEEN_FILE="$SESSION_DIR/${USER}_${IFACE}.last"
+        NOW=$(date +%s)
 
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
             OLD_IP=$(cat "$LAST_IP_FILE" | grep -oP '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
-            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
+            [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
+            DELTA=$((NOW - LAST_SEEN))
+
+            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" && "$DELTA" -gt 10 ]]; then
               if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
                 iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
                 echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
@@ -50,6 +55,7 @@ for LOG in /dante/ens*_access.log; do
           fi
 
           echo "$IP" > "$LAST_IP_FILE"
+          echo "$NOW" > "$LAST_SEEN_FILE"
           echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP, iface=$IFACE" >> "$LOG_FILE"
 
           rm -f "$LOCK_FILE"
@@ -89,16 +95,21 @@ for LOG in /var/log/squid/ens*_access.log; do
       if echo "$line" | grep -q "CONNECT" && echo "$line" | grep -q "TCP_TUNNEL/200"; then
         IP=$(echo "$line" | awk '{print $3}')
         USER=$(echo "$line" | awk '{print $8}')
+        NOW=$(date +%s)
 
         [[ -z "$USER" || "$USER" == "-" || -z "$IP" ]] && continue
 
         LOCK_FILE="$SESSION_DIR/${USER}_${IFACE}.lock"
         LAST_IP_FILE="$SESSION_DIR/${USER}_${IFACE}.ip"
+        LAST_SEEN_FILE="$SESSION_DIR/${USER}_${IFACE}.last"
 
         if ( set -o noclobber; echo "$IP" > "$LOCK_FILE" ) 2>/dev/null; then
           if [[ -f "$LAST_IP_FILE" ]]; then
             OLD_IP=$(cat "$LAST_IP_FILE" | grep -oP '([0-9]{1,3}\.){3}[0-9]{1,3}')
-            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
+            [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
+            DELTA=$((NOW - LAST_SEEN))
+
+            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" && "$DELTA" -gt 10 ]]; then
               if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
                 iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
                 echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
@@ -111,6 +122,7 @@ for LOG in /var/log/squid/ens*_access.log; do
           fi
 
           echo "$IP" > "$LAST_IP_FILE"
+          echo "$NOW" > "$LAST_SEEN_FILE"
           echo "$(date) [INFO] Normal login recorded: user=$USER, IP=$IP, iface=$IFACE" >> "$LOG_FILE"
 
           rm -f "$LOCK_FILE"
@@ -124,6 +136,7 @@ done
 
 wait
 EOF
+
 
 
 # 4. 기타 도우미 스크립트 추가
