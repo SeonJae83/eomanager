@@ -27,7 +27,8 @@ for LOG in /dante/ens*_access.log; do
     tail -Fn0 "$LOG" | while read line; do
       if echo "$line" | grep -q "username%.*@" && echo "$line" | grep -q "pass(1): tcp/connect"; then
         USER=$(echo "$line" | grep -oP 'username%\K[^@]+')
-        IP=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.]+')
+        IP_FULL=$(echo "$line" | grep -oP 'username%[^@]+@\K[0-9.]+(:[0-9]+)?')
+        IP=$(echo "$IP_FULL" | cut -d: -f1)
         NOW=$(date +%s)
 
         [[ -z "$USER" || -z "$IP" ]] && continue
@@ -93,7 +94,8 @@ for LOG in /var/log/squid/ens*_access.log; do
   (
     tail -Fn0 "$LOG" | while read -r line; do
       if echo "$line" | grep -q "TCP_TUNNEL/200"; then
-        IP=$(echo "$line" | awk '{print $3}')
+        IP_RAW=$(echo "$line" | awk '{print $3}')
+        IP=$(echo "$IP_RAW" | cut -d: -f1)
         USER=$(echo "$line" | awk '{print $8}')
         NOW=$(date +%s)
 
@@ -135,6 +137,7 @@ done
 
 wait
 EOF
+
 
 # 4. 기타 도우미 스크립트 추가
 
