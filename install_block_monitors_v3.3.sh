@@ -95,7 +95,7 @@ for LOG in /var/log/squid/ens*_access.log; do
   (
     tail -Fn0 "$LOG" | while read -r line; do
       if echo "$line" | grep -q "CONNECT" && echo "$line" | grep -q "TCP_TUNNEL/200"; then
-        IP_RAW=$(echo "$line" | awk '{print $3}')
+        IP_RAW=$(echo "$line" | awk '{print $2}')
         IP=$(echo "$IP_RAW" | grep -oP '([0-9]{1,3}\.){3}[0-9]{1,3}')
         USER=$(echo "$line" | awk '{print $8}')
         NOW=$(date +%s)
