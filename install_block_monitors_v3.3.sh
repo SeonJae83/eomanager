@@ -89,6 +89,7 @@ if ! command -v at >/dev/null 2>&1; then
   sudo apt update && sudo apt install -y at
 fi
 
+shopt -s nullglob
 for LOG in /var/log/squid/ens*_access.log; do
   IFACE=$(basename "$LOG" | cut -d_ -f1)
   (
