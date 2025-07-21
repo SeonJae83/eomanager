@@ -43,7 +43,7 @@ for LOG in /dante/ens*_access.log; do
             [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
             DELTA=$((NOW - LAST_SEEN))
 
-            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" && "$DELTA" -gt 10 ]]; then
+            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
               if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
                 iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
                 echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
@@ -111,7 +111,7 @@ for LOG in /var/log/squid/ens*_access.log; do
             [[ -f "$LAST_SEEN_FILE" ]] && LAST_SEEN=$(cat "$LAST_SEEN_FILE") || LAST_SEEN=0
             DELTA=$((NOW - LAST_SEEN))
 
-            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" && "$DELTA" -gt 10 ]]; then
+            if [[ "$OLD_IP" != "$IP" && "$OLD_IP" != "$EXCLUDED_IP" ]]; then
               if ! iptables -L INPUT -n | grep -q "$OLD_IP"; then
                 iptables -I INPUT -i "$IFACE" -s "$OLD_IP" -j DROP
                 echo "iptables -D INPUT -i $IFACE -s $OLD_IP -j DROP" | at now + $((BLOCK_DURATION / 60)) minutes
