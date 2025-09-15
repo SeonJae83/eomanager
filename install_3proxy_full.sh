@@ -2,19 +2,19 @@
 set -euo pipefail
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# ==== 설정(필요시만 변경) ======================================================
+# ===== 설정 =====
 VER=0.9.4
-IF_PREFIX="${IF_PREFIX:-ens}"       # ens*
+IF_PREFIX="${IF_PREFIX:-ens}"              # ens*
 PORT_HTTP_BASE="${PORT_HTTP_BASE:-3100}"   # ens33 -> 3133
 PORT_SOCKS_BASE="${PORT_SOCKS_BASE:-1000}" # ens33 -> 1033
 BLOCK_DURATION="${BLOCK_DURATION:-120}"    # 초
-GRACE_SEC="$BLOCK_DURATION"                # 전환 그레이스 = 차단시간
+GRACE_SEC="$BLOCK_DURATION"                # 전환 그레이스=차단시간
 
-# ==== 필수 패키지 ==============================================================
+# ===== 패키지 =====
 apt update
 apt install -y build-essential wget iptables at ca-certificates
 
-# ==== 3proxy 설치 ==============================================================
+# ===== 3proxy 설치 =====
 cd /usr/local/src
 [[ -d 3proxy-$VER ]] || wget -q https://github.com/z3APA3A/3proxy/archive/refs/tags/$VER.tar.gz -O 3proxy-$VER.tar.gz
 [[ -d 3proxy-$VER ]] || tar xzf 3proxy-$VER.tar.gz
@@ -22,13 +22,13 @@ cd 3proxy-$VER
 make -f Makefile.Linux
 install -m0755 bin/3proxy /usr/local/bin/3proxy
 
-# 사용자/디렉토리
+# 사용자/디렉터리
 id -u 3proxy &>/dev/null || useradd -r -s /usr/sbin/nologin 3proxy
 install -d -m0755 /etc/3proxy /var/log/3proxy /run/3proxy /home/script /home/script/logs
 chown -R 3proxy:3proxy /var/log/3proxy /run/3proxy
 touch /etc/3proxy/3proxy.cfg && chown 3proxy:3proxy /etc/3proxy/3proxy.cfg && chmod 660 /etc/3proxy/3proxy.cfg
 
-# ==== 3proxy 베이스 설정 =======================================================
+# ===== 3proxy 베이스 설정 =====
 cat >/etc/3proxy/3proxy.base.cfg <<'EOF'
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
@@ -36,7 +36,7 @@ log /var/log/3proxy/3proxy.log
 logformat "L%Y-%m-%d %H:%M:%S %n %E %U %C:%c %R:%r %I %O %T"
 EOF
 
-# 계정 파일(예시 1개)
+# 계정 파일(예시)
 [[ -f /etc/3proxy/users.lst ]] || cat >/etc/3proxy/users.lst <<'EOF'
 seonjaelee:CL:seon1234
 EOF
@@ -44,7 +44,7 @@ chown root:3proxy /etc/3proxy/users.lst
 chmod 640 /etc/3proxy/users.lst
 sed -i 's/\r$//' /etc/3proxy/users.lst
 
-# ==== 동적 생성기(인터페이스별 -l 로그, 화이트리스트/계정 OR 허용) ============
+# ===== 동적 생성기 =====
 cat >/home/script/gen-3proxy-dynamic.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -103,7 +103,6 @@ for ifc in "${IFACES[@]}"; do
     fi
 
     echo "deny * * *"
-    # per-IF 로그 파일 지정(-l). HTTP/SOCKS 동일 파일 사용.
     echo "proxy -p${hport} -i${ipaddr} -e${ipaddr} -l/var/log/3proxy/${ifc}_access.log"
     echo "socks  -p${sport} -i${ipaddr} -e${ipaddr} -l/var/log/3proxy/${ifc}_access.log"
   } >>"$OUT"
@@ -119,13 +118,12 @@ EOF
 chmod 755 /home/script/gen-3proxy-dynamic.sh
 sed -i 's/\r$//' /home/script/gen-3proxy-dynamic.sh
 
-# ==== systemd: 3proxy ==========================================================
+# ===== systemd: 3proxy =====
 cat >/etc/systemd/system/3proxy.service <<'EOF'
 [Unit]
 Description=3proxy multi-interface proxy
 After=network-online.target
 Wants=network-online.target
-
 [Service]
 Type=simple
 User=3proxy
@@ -138,12 +136,11 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=1
 LimitNOFILE=65536
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ==== manage.3proxy: 인터페이스 로그 집계 =====================================
+# ===== manage.3proxy =====
 cat >/home/script/manage.3proxy.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -168,17 +165,15 @@ cat >/etc/systemd/system/proxy-manage-3proxy.service <<'EOF'
 Description=3proxy traffic tailer (per-interface logs)
 After=3proxy.service
 Requires=3proxy.service
-
 [Service]
 Type=simple
 ExecStart=/home/script/manage.3proxy.sh
 Restart=always
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ==== dupguard: 인터페이스별 중복 접속 차단 ====================================
+# ===== dupguard(인터페이스별 차단) =====
 cat >/home/script/3proxy-ip-block-monitor-iface.sh <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -258,7 +253,7 @@ start_tailer() {
           echo "\$now" >"\$ts_f"; flock -u 8; continue
         fi
 
-        # B) prev에서 오는 경우: DROP 존재=잔여로그(IGNORE), 없으면 진짜 전환(SWITCH)
+        # B) prev에서 옴: DROP 있으면 잔여로그, 없으면 전환
         if [[ -n "\$prev" && "\$CIP" == "\$prev" ]]; then
           if [[ -n "\$ipt" ]] && \$ipt \$IPTW -C INPUT -i "\$IFACE" -s "\$prev" -j DROP 2>/dev/null; then
             echo "\$(date +'%F %T') IGNORE grace(prev-blocked) prev=\$prev cur=\$cur user=\$USER iface=\$IFACE" >>"\$DBG_LOG"
@@ -309,7 +304,7 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-# ==== 차단 리스트 보기 도우미 ==================================================
+# ===== 차단 목록 보기 =====
 cat >/home/script/3proxy-block-list.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -329,7 +324,57 @@ done
 EOF
 chmod +x /home/script/3proxy-block-list.sh
 
-# ==== logrotate(3proxy 트래픽 + 관리 로그) =====================================
+# ===== unlock(인터페이스 지정 규칙만) =====
+cat >/home/script/3proxy-unlock-ip.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+LOG="/home/script/logs/ip_blocked.log"
+
+IP="${1:-}"
+[[ -n "$IP" ]] || { echo "Usage: $0 <IP_ADDRESS>"; exit 1; }
+
+ipt="$(command -v iptables || true)"
+[[ -n "$ipt" ]] || { echo "iptables not found"; exit 1; }
+IPTW=""; $ipt -w -L &>/dev/null && IPTW="-w"
+
+mapfile -t IFACES < <(grep -E "^$IP\|" "$LOG" 2>/dev/null | cut -d'|' -f3 | sort -u || true)
+if [[ ${#IFACES[@]} -eq 0 ]]; then
+  echo "No iface entries for $IP in $LOG. Nothing to do."
+  exit 0
+fi
+
+for IFACE in "${IFACES[@]}"; do
+  [[ -z "$IFACE" ]] && continue
+  while $ipt $IPTW -C INPUT -i "$IFACE" -s "$IP" -j DROP 2>/dev/null; do
+    $ipt $IPTW -D INPUT -i "$IFACE" -s "$IP" -j DROP && echo "Removed: -i $IFACE -s $IP -j DROP"
+  done
+done
+
+if command -v atq >/dev/null 2>&1; then
+  while read -r JID _; do
+    JOB="$(at -c "$JID" 2>/dev/null || true)"
+    for IFACE in "${IFACES[@]}"; do
+      [[ -z "$IFACE" ]] && continue
+      if grep -q -- "-i ${IFACE} " <<<"$JOB" && grep -q -- "-s ${IP} " <<<"$JOB"; then
+        atrm "$JID" && echo "Removed at job: $JID (-i $IFACE -s $IP)"
+        break
+      fi
+    done
+  done < <(atq 2>/dev/null || true)
+fi
+
+if [[ -f "$LOG" ]]; then
+  TMP="$(mktemp)"
+  awk -v ip="$IP" -v list="$(printf '%s ' "${IFACES[@]}")" -F'|' '
+    BEGIN{split(list,a); for(i in a) if(a[i]!="") keep[a[i]]=1}
+    { if (!( $1==ip && ($3 in keep) )) print $0 }
+  ' "$LOG" > "$TMP" && mv "$TMP" "$LOG"
+  echo "Pruned $LOG for $IP on: ${IFACES[*]}"
+fi
+EOF
+chmod +x /home/script/3proxy-unlock-ip.sh
+
+# ===== logrotate =====
 cat >/etc/logrotate.d/3proxy <<'EOF'
 /var/log/3proxy/3proxy.log /var/log/3proxy/ens*_access.log {
     daily
@@ -355,74 +400,26 @@ cat >/etc/logrotate.d/3proxy <<'EOF'
     copytruncate
 }
 EOF
-cat >/home/script/unlock-ip.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-LOG="/home/script/logs/ip_blocked.log"
 
-IP="${1:-}"
-[[ -n "$IP" ]] || { echo "Usage: $0 <IP_ADDRESS>"; exit 1; }
-
-ipt="$(command -v iptables || true)"
-[[ -n "$ipt" ]] || { echo "iptables not found"; exit 1; }
-IPTW=""; $ipt -w -L &>/dev/null && IPTW="-w"
-
-# 1) BLOCK_LOG에 기록된 인터페이스만 대상으로 함
-mapfile -t IFACES < <(grep -E "^$IP\|" "$LOG" 2>/dev/null | cut -d'|' -f3 | sort -u || true)
-if [[ ${#IFACES[@]} -eq 0 ]]; then
-  echo "No iface entries for $IP in $LOG. Nothing to do."
-  exit 0
+# ===== rc.local 백업 후 squid/dante 비활성 주석 =====
+if [[ -f /etc/rc.local ]]; then
+  [[ -f /etc/rc.local.bak_3proxy ]] || cp -a /etc/rc.local /etc/rc.local.bak_3proxy
+  sed -i -E 's/^([[:space:]]*su[[:space:]]+root[[:space:]]+-c[[:space:]]+"bash[[:space:]]+\/home\/script\/squid_config\.sh.*)/# \1/' /etc/rc.local
+  sed -i -E 's/^([[:space:]]*su[[:space:]]+root[[:space:]]+-c[[:space:]]+"bash[[:space:]]+\/home\/script\/dante_config\.sh.*)/# \1/' /etc/rc.local
+  chmod +x /etc/rc.local
 fi
 
-# 2) 인터페이스 지정 규칙만 제거(-i가 있는 DROP만)
-for IFACE in "${IFACES[@]}"; do
-  [[ -z "$IFACE" ]] && continue
-  while $ipt $IPTW -C INPUT -i "$IFACE" -s "$IP" -j DROP 2>/dev/null; do
-    $ipt $IPTW -D INPUT -i "$IFACE" -s "$IP" -j DROP && echo "Removed: -i $IFACE -s $IP -j DROP"
-  done
-done
-
-# 3) 해당 인터페이스용 at 작업만 취소(미지정 규칙 관련 작업은 건드리지 않음)
-if command -v atq >/dev/null 2>&1; then
-  while read -r JID _; do
-    JOB="$(at -c "$JID" 2>/dev/null || true)"
-    for IFACE in "${IFACES[@]}"; do
-      [[ -z "$IFACE" ]] && continue
-      if grep -q -- "-i ${IFACE} " <<<"$JOB" && grep -q -- "-s ${IP} " <<<"$JOB"; then
-        atrm "$JID" && echo "Removed at job: $JID (-i $IFACE -s $IP)"
-        break
-      fi
-    done
-  done < <(atq 2>/dev/null || true)
-fi
-
-# 4) 로그에서 해당 인터페이스 줄만 정리(미지정/다른 IFACE 기록은 유지)
-if [[ -f "$LOG" ]]; then
-  TMP="$(mktemp)"
-  awk -v ip="$IP" -v list="$(printf '%s ' "${IFACES[@]}")" -F'|' '
-    BEGIN{split(list,a); for(i in a) if(a[i]!="") keep[a[i]]=1}
-    { if (!( $1==ip && ($3 in keep) )) print $0 }
-  ' "$LOG" > "$TMP" && mv "$TMP" "$LOG"
-  echo "Pruned $LOG for $IP on: ${IFACES[*]}"
-fi
-EOF
-chmod +x /home/script/unlock-ip.sh
-
-# ==== 기존 전역 포트 DROP 청소(있으면 테스트 방해) =============================
-#for p in 1033 3133 1034 3134 1035 3135 1036 3136 5555; do
-#  iptables -D INPUT -p tcp --dport $p -j DROP 2>/dev/null || true
-#done
-
-# ==== 활성화 ==================================================================
+# ===== 활성화 =====
 systemctl daemon-reload
 systemctl enable --now 3proxy
 systemctl enable --now proxy-manage-3proxy
 systemctl enable --now 3proxy-ip-monitor
 
-# 적용 및 확인 메시지
 /home/script/gen-3proxy-dynamic.sh
 systemctl restart 3proxy
-echo "OK: per-IF logs -> /var/log/3proxy/ens*_access.log"
-echo "OK: manage log  -> /home/script/manage.3proxy.log"
-echo "OK: dupguard    -> /home/script/logs/3proxy_dupguard_iface.log"
-echo "Block list: /home/script/3proxy-block-list.sh"
+
+echo "OK: ens*_access.log -> /var/log/3proxy/"
+echo "OK: manage log      -> /home/script/manage.3proxy.log"
+echo "OK: dupguard log    -> /home/script/logs/3proxy_dupguard_iface.log"
+echo "Block list          -> /home/script/3proxy-block-list.sh"
+echo "Unlock              -> /home/script/3proxy-unlock-ip.sh <IP>"
