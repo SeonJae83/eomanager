@@ -38,7 +38,7 @@ EOF
 
 # 계정 파일(예시)
 [[ -f /etc/3proxy/users.lst ]] || cat >/etc/3proxy/users.lst <<'EOF'
-seonjaelee:CL:seon1234
+
 EOF
 chown root:3proxy /etc/3proxy/users.lst
 chmod 640 /etc/3proxy/users.lst
