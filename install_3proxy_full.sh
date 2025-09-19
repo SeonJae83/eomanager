@@ -306,71 +306,97 @@ EOF
 
 # ===== 차단 목록 보기 =====
 cat >/home/script/3proxy-block-list.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-LOG=/home/script/logs/ip_blocked.log
-declare -A last
-[[ -f "$LOG" ]] && while IFS='|' read -r ip user iface ts; do
-  [[ -z "${ip:-}" || -z "${iface:-}" ]] && continue
-  last["$iface|$ip"]="$user|$ts"
-done < <(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\|' "$LOG" || true)
-iptables -S INPUT | while read -r line; do
-  [[ "$line" =~ ^-A\ INPUT && "$line" =~ " -i " && "$line" =~ " -s " && "$line" =~ " -j DROP" ]] || continue
-  iface=$(sed -n 's/.* -i \([^ ]*\).*/\1/p' <<<"$line")
-  ip=$(sed -n 's/.* -s \([^ ]*\).*/\1/p' <<<"$line"); ip=${ip%/32}
-  meta="${last["$iface|$ip"]:-|-}"; user="${meta%%|*}"; ts="${meta#*|}"
-  printf "%-8s %-15s %-16s %s\n" "$iface" "$ip" "$user" "$ts"
+#!/bin/bash
+BLOCK_LOG="/home/script/logs/ip_blocked.log"
+
+for IP in $(sudo iptables -S INPUT | grep "^-A INPUT -s" | grep " -j DROP" | awk '{print $4}' | sed 's#/32##'); do
+    USER=$(grep "^$IP|" "$BLOCK_LOG" 2>/dev/null | tail -n1 | cut -d'|' -f2)
+    [[ -z "$USER" ]] && USER="unknown"
+
+    IFACE=$(grep "^$IP|" "$BLOCK_LOG" 2>/dev/null | tail -n1 | cut -d'|' -f3)
+    [[ -z "$IFACE" ]] && IFACE="unknown"
+
+    JOB_LINE=""
+    while IFS= read -r line; do
+        JOB_ID=$(echo "$line" | awk '{print $1}')
+        if at -c "$JOB_ID" 2>/dev/null | grep -q -- "-s $IP"; then
+            JOB_LINE="$line"
+            break
+        fi
+    done < <(atq)
+
+    if [[ -n "$JOB_LINE" ]]; then
+        echo "$IP | $USER | $JOB_LINE | $IFACE"
+    else
+        echo "$IP | $USER | (no at job) | $IFACE"
+    fi
 done
 EOF
 chmod +x /home/script/3proxy-block-list.sh
 
 # ===== unlock(인터페이스 지정 규칙만) =====
 cat >/home/script/3proxy-unlock-ip.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-LOG="/home/script/logs/ip_blocked.log"
+#!/bin/bash
+BLOCK_LOG="/home/script/logs/ip_blocked.log"
 
-IP="${1:-}"
-[[ -n "$IP" ]] || { echo "Usage: $0 <IP_ADDRESS>"; exit 1; }
+for IP in $(sudo iptables -S INPUT | grep "^-A INPUT -s" | grep " -j DROP" | awk '{print $4}' | sed 's#/32##'); do
+    USER=$(grep "^$IP|" "$BLOCK_LOG" 2>/dev/null | tail -n1 | cut -d'|' -f2)
+    [[ -z "$USER" ]] && USER="unknown"
 
-ipt="$(command -v iptables || true)"
-[[ -n "$ipt" ]] || { echo "iptables not found"; exit 1; }
-IPTW=""; $ipt -w -L &>/dev/null && IPTW="-w"
+    IFACE=$(grep "^$IP|" "$BLOCK_LOG" 2>/dev/null | tail -n1 | cut -d'|' -f3)
+    [[ -z "$IFACE" ]] && IFACE="unknown"
 
-mapfile -t IFACES < <(grep -E "^$IP\|" "$LOG" 2>/dev/null | cut -d'|' -f3 | sort -u || true)
-if [[ ${#IFACES[@]} -eq 0 ]]; then
-  echo "No iface entries for $IP in $LOG. Nothing to do."
-  exit 0
+    JOB_LINE=""
+    while IFS= read -r line; do
+        JOB_ID=$(echo "$line" | awk '{print $1}')
+        if at -c "$JOB_ID" 2>/dev/null | grep -q -- "-s $IP"; then
+            JOB_LINE="$line"
+            break
+        fi
+    done < <(atq)
+
+    if [[ -n "$JOB_LINE" ]]; then
+        echo "$IP | $USER | $JOB_LINE | $IFACE"
+    else
+        echo "$IP | $USER | (no at job) | $IFACE"
+    fi
+done
+root@sg100:/home/script# cat unlock-ip.sh
+#!/bin/bash
+BLOCK_LOG="/home/script/logs/ip_blocked.log"
+
+if [[ -z "$1" ]]; then
+  echo "Usage: $0 <IP_ADDRESS>"
+  exit 1
 fi
 
-for IFACE in "${IFACES[@]}"; do
-  [[ -z "$IFACE" ]] && continue
-  while $ipt $IPTW -C INPUT -i "$IFACE" -s "$IP" -j DROP 2>/dev/null; do
-    $ipt $IPTW -D INPUT -i "$IFACE" -s "$IP" -j DROP && echo "Removed: -i $IFACE -s $IP -j DROP"
+IP="$1"
+echo "Unblocking IP: $IP"
+
+IFACES=$(grep "^$IP|" "$BLOCK_LOG" | cut -d'|' -f3 | sort -u)
+
+if [[ -z "$IFACES" ]]; then
+  echo "[WARN] No interface found for $IP in $BLOCK_LOG"
+else
+  for IFACE in $IFACES; do
+    sudo iptables -D INPUT -i "$IFACE" -s "$IP" -j DROP && \
+      echo "Removed $IP from iptables DROP rules on $IFACE"
   done
+fi
+
+for JOB in $(atq | awk '{print $1}'); do
+  if sudo at -c "$JOB" | grep -q "$IP"; then
+    sudo atrm "$JOB" && echo "Removed scheduled at job: $JOB"
+  fi
+
 done
 
-if command -v atq >/dev/null 2>&1; then
-  while read -r JID _; do
-    JOB="$(at -c "$JID" 2>/dev/null || true)"
-    for IFACE in "${IFACES[@]}"; do
-      [[ -z "$IFACE" ]] && continue
-      if grep -q -- "-i ${IFACE} " <<<"$JOB" && grep -q -- "-s ${IP} " <<<"$JOB"; then
-        atrm "$JID" && echo "Removed at job: $JID (-i $IFACE -s $IP)"
-        break
-      fi
-    done
-  done < <(atq 2>/dev/null || true)
+if [[ -f "$BLOCK_LOG" ]]; then
+  TMP_FILE=$(mktemp)
+  grep -v "^$IP|" "$BLOCK_LOG" > "$TMP_FILE" && mv "$TMP_FILE" "$BLOCK_LOG"
+  echo "Removed $IP entry from block log."
 fi
 
-if [[ -f "$LOG" ]]; then
-  TMP="$(mktemp)"
-  awk -v ip="$IP" -v list="$(printf '%s ' "${IFACES[@]}")" -F'|' '
-    BEGIN{split(list,a); for(i in a) if(a[i]!="") keep[a[i]]=1}
-    { if (!( $1==ip && ($3 in keep) )) print $0 }
-  ' "$LOG" > "$TMP" && mv "$TMP" "$LOG"
-  echo "Pruned $LOG for $IP on: ${IFACES[*]}"
-fi
 EOF
 chmod +x /home/script/3proxy-unlock-ip.sh
 
