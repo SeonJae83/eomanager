@@ -413,7 +413,6 @@ cat >/etc/logrotate.d/3proxy <<'EOF'
     create 0640 3proxy 3proxy
     sharedscripts
     postrotate
-        systemctl kill -s HUP 3proxy.service >/dev/null 2>&1 || true
     endscript
 }
 /home/script/manage.3proxy.log /home/script/logs/*.log {
