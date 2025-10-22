@@ -412,8 +412,7 @@ cat >/etc/logrotate.d/3proxy <<'EOF'
     dateext
     create 0640 3proxy 3proxy
     sharedscripts
-    postrotate
-    endscript
+    copytruncate
 }
 /home/script/manage.3proxy.log /home/script/logs/*.log {
     daily
