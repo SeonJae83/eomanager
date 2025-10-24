@@ -415,7 +415,3 @@ UN
 chmod 755 "$UNINST"
 
 echo "[DONE] install script finished"
-
-
-
-이건 언제 버전이야
