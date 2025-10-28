@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mi-openvpn-install.sh — per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
+# mi-openvpn-install.sh ? per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
 # - IF별 인스턴스, 관리포트, 정책라우팅, SNAT
 # - deny/allow ACL
 # - 훅: CN 디렉터리 정합화(STATUS와 비교해 이탈 토큰 삭제) + 토큰 생성
@@ -375,14 +375,13 @@ user nobody
 group nogroup
 script-security 2
 
-#duplicate-cn
+# duplicate-cn
 topology subnet
 client-to-client
 keepalive 10 120
 explicit-exit-notify 1
 
-# 동시접속 제한(기본 1) — 훅에 직접 전달되도록 setenv 포함
-setenv MAX_SESSIONS_PER_CN 1
+# setenv MAX_SESSIONS_PER_CN 2
 
 push "dhcp-option DNS $DNS1"
 push "dhcp-option DNS $DNS2"
@@ -408,8 +407,8 @@ status-version 3
 # 훅/제한 환경
 setenv IFACE ${IFACE}
 setenv-safe STATUS_FILE $ST_FILE
-client-connect "/etc/openvpn/hooks-limit2.sh $ST_FILE"
-client-disconnect "/etc/openvpn/hooks-limit2.sh $ST_FILE"
+# client-connect "/etc/openvpn/hooks-limit2.sh $ST_FILE"
+# client-disconnect "/etc/openvpn/hooks-limit2.sh $ST_FILE"
 
 mute-replay-warnings
 verb 3
