@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# mi-openvpn-install.sh ? per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
+# mi-openvpn-install.sh — per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
 # - IF별 인스턴스, 관리포트, 정책라우팅, SNAT
 # - deny/allow ACL
 # - 훅: CN 디렉터리 정합화(STATUS와 비교해 이탈 토큰 삭제) + 토큰 생성
 # - 동기화 타이머: 복원 + 2회 연속 미존재 감지 시 삭제 + 고아 .gone 청소
 # - DEL: deny 추가 + mgmt kill + 락 정리
+# - FIND: status-mi-ensXX.log 기반 CN 활동여부(True/False + age)
 set -Eeuo pipefail
 LOGFILE=/var/log/mi-openvpn-install.log
 exec > >(tee -a "$LOGFILE") 2>&1
@@ -30,6 +31,7 @@ LOCKSYNC=/usr/local/sbin/mi_lock_sync.sh
 ADDUSR=/usr/local/sbin/ovpn_add_user.sh
 DELUSR=/usr/local/sbin/ovpn_del.sh
 LISTUSR=/usr/local/sbin/ovpn_list_users.sh
+FINDUSR=/usr/local/sbin/ovpn-find-user.sh
 UNINST=/usr/local/sbin/mi-openvpn-uninstall.sh
 
 install -d -m0755 "$SRV_DIR" "$PROF_DIR" /usr/local/sbin "$ACL_DIR" "$RUN_DIR" "$LOCK_BASE"
@@ -122,7 +124,7 @@ exit 0
 HOOK
 chmod 755 "$HOOK_LIMIT2"
 
-# ====== LOCK SYNC: 복원 + 2회 연속 미존재 시 삭제 + 고아 .gone 청소 ======
+# ====== LOCK SYNC ======
 cat > "$LOCKSYNC" <<'RB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -293,6 +295,56 @@ done
 [[ $had -eq 1 ]] || echo "(no active clients)"
 LISTUSR
 chmod 755 "$LISTUSR"
+
+# ====== FIND USER (True/False + 경과초) ======
+cat > "$FINDUSR" <<'FIND'
+#!/usr/bin/env bash
+# usage: ovpn-find-user.sh <ensNN> <CN> [THRESHOLD_SEC]
+set -euo pipefail
+IFACE="${1:?usage: ovpn-find-user.sh <ensNN> <CN> [THRESHOLD_SEC] }"
+CN="${2:?usage: ovpn-find-user.sh <ensNN> <CN> [THRESHOLD_SEC] }"
+TH="${3:-180}"
+
+LOG=""
+for p in "/run/openvpn-server/status-mi-${IFACE}.log" "/run/openvpn-server/status-mi-${IFACE}-log"; do
+  [[ -f "$p" ]] && { LOG="$p"; break; }
+done
+[[ -n "$LOG" ]] || { echo "False (no-status-file)"; exit 1; }
+
+awk -v cn="$CN" -v TH="$TH" '
+BEGIN{
+  FS = "\t+"
+  now=0; lastref=-1
+}
+$1=="TIME" {
+  if ($NF ~ /^[0-9]+$/) now=$NF+0
+  next
+}
+$1=="ROUTING_TABLE" {
+  gsub(/^[ \t]+|[ \t]+$/, "", $3)
+  if ($3==cn && $NF ~ /^[0-9]+$/) {
+    lr=$NF+0
+    if (lr>lastref) lastref=lr
+  }
+  next
+}
+$1=="CLIENT_LIST" {
+  gsub(/^[ \t]+|[ \t]+$/, "", $2)
+  if ($2==cn) {
+    for(i=NF;i>=1;i--) if ($i ~ /^[0-9]+$/) { lr=$i+0; break }
+    if (lr>0 && lr>lastref) lastref=lr
+  }
+  next
+}
+END{
+  if (now==0 || lastref<0) { print "False (no-data)"; exit }
+  age=now-lastref
+  if (age<=TH) printf "True (%ds)\n", age
+  else         printf "False (%ds)\n", age
+}
+' "$LOG"
+FIND
+chmod 755 "$FINDUSR"
 
 # ====== RP_FILTER ======
 apply_iface_sysctl(){
@@ -537,3 +589,8 @@ systemctl daemon-reload
 systemctl enable --now mi-lock-sync.timer
 
 echo "[DONE] install script finished"
+echo "UTILS:"
+echo "  Add user        : $ADDUSR <ensNN> <cn>"
+echo "  Del user        : $DELUSR <ensNN> <cn>"
+echo "  List users      : $LISTUSR"
+echo "  Find user(OVPN) : $FINDUSR <ensNN> <cn> [threshold]   # True (XXs) / False (XXs)"
