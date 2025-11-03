@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# install_wg_full.sh — multi-IF WireGuard FULL(무인자 자동)
-# - 모든 ensNN 인터페이스 자동 처리
-# - per-IF policy routing + SNAT + fwmark(역방향 라우팅 고정)
+# install_wg_full.sh — multi-IF WireGuard FULL(무인자 자동, del유틸 고정, "# <user>" 제거)
+# - 모든 ensNN 자동 처리, per-IF policy routing + SNAT + fwmark(응답 경로 고정)
 # - INPUT 필터(코멘트 태깅): NIC:PORT 수신만 허용
-# - user add/del + QR (DNS=168.126.63.1, Keepalive=10s)
-# - 부팅 후 자동 재적용(wg-reinit.service)
-# - wg↔OpenVPN 레이스 회피: network-online.target 이후
-# - uninstall 동봉(OpenVPN/기존 SNAT 훼손 없음, 빠른 규칙 제거)
+# - user add/del + QR (DNS=168.126.63.1, Keepalive=10s)  [# Name = <user> 형식만 기록]
+# - 부팅 후 자동 재적용(wg-reinit.service), network-online.target 이후 실행
+# - uninstall 동봉(빠른 규칙 제거, OpenVPN/기존 SNAT 훼손 없음)
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run as root"; exit 1; }
 
@@ -16,10 +14,10 @@ BIN="/usr/local/sbin"
 mkdir -p "$BASE" "$ETC_WG" /etc/systemd/system/wg-quick@.service.d
 chmod 755 "$BASE"
 
-# pkgs
+# ===== pkgs =====
 apt-get install -y wireguard qrencode iproute2 >/dev/null 2>&1 || true
 
-# ==== wg-quick drop-in: network-online 이후 ====
+# ===== wg-quick drop-in: network-online 이후 =====
 cat >/etc/systemd/system/wg-quick@.service.d/override.conf <<'EOF'
 [Unit]
 After=network-online.target
@@ -27,14 +25,13 @@ Wants=network-online.target
 EOF
 systemctl daemon-reload
 
-# ==== helper: postup/postdown ====
+# ===== helper: postup/postdown =====
 cat >"$BIN/wg-mi-postup" <<"EOF"
 #!/usr/bin/env bash
 # usage: wg-mi-postup <NIC> <IFACE> <SUBNET> <TBL> <PRI> <PORT>
 set -Eeu -o pipefail
 NIC="$1"; IFACE="$2"; SUBNET="$3"; TBL="$4"; PRI="$5"; PORT="$6"
 
-# 라우트 준비 대기(최대 5초) + oif 기반 GW 탐지
 for _ in {1..50}; do
   SRC=$(ip -4 -o addr show dev "$NIC" | awk '{split($4,a,"/");print a[1]}') || true
   NET=$(ip -4 route show dev "$NIC" | awk '/proto kernel/ {print $1;exit}') || true
@@ -42,34 +39,26 @@ for _ in {1..50}; do
   [[ -n "${SRC:-}" && -n "${NET:-}" && -n "${GW:-}" ]] && break
   sleep 0.1
 done
-if [[ -z "${SRC:-}" || -z "${NET:-}" || -z "${GW:-}" ]]; then
-  echo "[wg-mi-postup] missing param NIC=$NIC SRC=${SRC:-} NET=${NET:-} GW=${GW:-}" >&2
-  exit 0
-fi
+[[ -z "${SRC:-}" || -z "${NET:-}" || -z "${GW:-}" ]] && { echo "[wg-mi-postup] missing param" >&2; exit 0; }
 
-# 정책 라우팅
 sysctl -wq "net.ipv4.conf.$NIC.rp_filter=2" || true
 sysctl -wq "net.ipv4.conf.$IFACE.rp_filter=2" || true
 ip route replace table "$TBL" "$NET" dev "$NIC" scope link src "$SRC" || true
 ip route replace table "$TBL" default via "$GW" dev "$NIC" onlink src "$SRC" || true
 ip rule add from "$SUBNET" lookup "$TBL" priority "$PRI" 2>/dev/null || true
 
-# fwmark 라우팅(응답 경로 고정)
 IFNUM="$(sed 's/[^0-9]//g' <<<"$NIC")"
 FWMARK_HEX="$(printf '0x%04X' "$(( 0x3000 + IFNUM ))")"
 ip rule add fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null || true
 
-# SNAT
 iptables -w 1 -t nat -C POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC" 2>/dev/null \
   || iptables -w 1 -t nat -A POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC"
 
-# 입력 필터(코멘트 태깅): 해당 NIC:PORT만 ACCEPT, 동일 포트 타 NIC은 DROP
 iptables -w 1 -C INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:$NIC:$PORT:ACCEPT" -j ACCEPT 2>/dev/null || \
 iptables -w 1 -I INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:$NIC:$PORT:ACCEPT" -j ACCEPT
 iptables -w 1 -C INPUT -p udp --dport "$PORT" -m comment --comment "wg-mi:*:$PORT:DROP" -j DROP 2>/dev/null || \
 iptables -w 1 -A INPUT -p udp --dport "$PORT" -m comment --comment "wg-mi:*:$PORT:DROP" -j DROP
 
-# GW 이웃 캐시 예열(초기 핸드셰이크 속도 개선)
 ping -c1 -W1 "$GW" >/dev/null 2>&1 || true
 EOF
 chmod 755 "$BIN/wg-mi-postup"
@@ -81,7 +70,6 @@ set -Eeu -o pipefail
 NIC="$1"; SUBNET="$2"; TBL="$3"; PRI="$4"; PORT="$5"
 SRC="$(ip -4 -o addr show dev "$NIC" 2>/dev/null | awk '{split($4,a,"/");print a[1]}')" || true
 
-# 입력 필터 해제(코멘트 기반)
 iptables -S INPUT | awk -v nic="$NIC" -v port="$PORT" '
 /^-A INPUT/ && /-p udp/ && ("--dport "port) && /-m comment --comment "wg-mi:/ {
   if ($0 ~ "wg-mi:"nic":"port":ACCEPT" || $0 ~ "wg-mi:\\*:"port":DROP") {
@@ -89,108 +77,66 @@ iptables -S INPUT | awk -v nic="$NIC" -v port="$PORT" '
   }
 }' | while read -r spec; do iptables -w 1 -D INPUT $spec 2>/dev/null || true; done
 
-# SNAT 해제
 if [[ -n "${SRC:-}" ]]; then
   iptables -w 1 -t nat -D POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC" 2>/dev/null || true
 fi
 
-# 정책 라우팅 해제
 ip rule del from "$SUBNET" lookup "$TBL" priority "$PRI" 2>/dev/null || true
 ip route flush table "$TBL" 2>/dev/null || true
 
-# fwmark 라우팅 해제
 IFNUM="$(sed 's/[^0-9]//g' <<<"$NIC")"
 FWMARK_HEX="$(printf '0x%04X' "$(( 0x3000 + IFNUM ))")"
 ip rule del fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null || true
 EOF
 chmod 755 "$BIN/wg-mi-postdown"
 
-# ==== setup_wg_iface.sh — 모든 ensNN 자동, 인자 불필요 ====
+# ===== setup_wg_iface.sh — ensNN 자동 =====
 cat >"${BASE}/setup_wg_iface.sh" <<"EOF"
 #!/usr/bin/env bash
-# setup_wg_iface.sh — multi-IF(WAN=ensNN) WireGuard 재설정(무인자)
-# - 모든 ensNN의 현재 IPv4 감지 → 서버 conf 재작성
-# - 기존 PrivateKey/ListenPort 보존(파일 → 런타임 우선, 없을 때만 생성)
-# - 기존 [Peer] 보존(파일 없으면 런타임 회수)
-# - FwMark=0x30xx 기입 + strip 검증 + 원자적 교체
-# - Endpoint 자동 갱신
 set -Eeuo pipefail
 trap 'echo "[ERR] line:$LINENO cmd:$BASH_COMMAND" >&2' ERR
-
 tbl(){ echo $((3000+$1)); }
 pri(){ echo $((30000+$1)); }
-
 need(){ command -v "$1" >/dev/null || { echo "missing: $1"; exit 127; }; }
 need awk; need ip; need wg; need wg-quick; need systemctl; need sed; need base64
 
 get_nics(){
-  ip -4 -o addr show \
-  | awk '{print $2}' | sed 's/@.*//' | sort -u | grep -E '^ens[0-9]+$' \
+  ip -4 -o addr show | awk '{print $2}' | sed 's/@.*//' | sort -u | grep -E '^ens[0-9]+$' \
   | while read -r n; do ip -o link show dev "$n" | grep -q "state UP" && echo "$n"; done
 }
-
 parse_priv_port(){
-  local conf="$1"
-  local stripped; stripped="$(wg-quick strip "$conf" 2>/dev/null || true)"
+  local conf="$1"; local stripped; stripped="$(wg-quick strip "$conf" 2>/dev/null || true)"
   local pkey port
   pkey="$(awk '$1=="PrivateKey"{print $3;exit}' <<<"$stripped" || true)"
   port="$(awk  '$1=="ListenPort"{print $3;exit}' <<<"$stripped" || true)"
   printf '%s|%s\n' "${pkey:-}" "${port:-}"
 }
-
-normalize_b64(){
-  local s="${1:-}"
-  s="$(printf '%s' "$s" | tr -cd 'A-Za-z0-9+/=')"
-  local mod=$(( ${#s} % 4 ))
-  [[ $mod -eq 2 ]] && s="${s}=="
-  [[ $mod -eq 3 ]] && s="${s}="
-  printf '%s' "$s" | base64 -d >/dev/null 2>&1 || { echo ""; return; }
-  echo "$s"
-}
+normalize_b64(){ local s="${1:-}"; s="$(printf '%s' "$s" | tr -cd 'A-Za-z0-9+/=')"
+  local mod=$(( ${#s} % 4 )); [[ $mod -eq 2 ]] && s="${s}=="; [[ $mod -eq 3 ]] && s="${s}="
+  printf '%s' "$s" | base64 -d >/dev/null 2>&1 || { echo ""; return; }; echo "$s"; }
 
 setup_one(){
-  local NIC="$1"
-  local NUM; NUM="$(sed 's/[^0-9]//g' <<<"$NIC")"
-  [[ -n "$NUM" ]] || { echo "skip $NIC: no numeric suffix"; return 0; }
-
+  local NIC="$1"; local NUM; NUM="$(sed 's/[^0-9]//g' <<<"$NIC")"; [[ -n "$NUM" ]] || { echo "skip $NIC"; return; }
   local IFACE="wg-${NIC}"
   local CONF="/etc/wireguard/${IFACE}.conf"
   local DEFAULT_PORT="$((50000+NUM))"
-  local SUBNET="10.10.${NUM}.0/24"
-  local GIP="10.10.${NUM}.1/24"
-  local TBL="$(tbl "$NUM")"
-  local PRI="$(pri "$NUM")"
-  local IFNUM="$NUM"
-  local FWMARK_HEX; FWMARK_HEX="$(printf '0x%04X' "$(( 0x3000 + IFNUM ))")"
-
+  local SUBNET="10.10.${NUM}.0/24" GIP="10.10.${NUM}.1/24" TBL="$(tbl "$NUM")" PRI="$(pri "$NUM")"
+  local IFNUM="$NUM" FWMARK_HEX; FWMARK_HEX="$(printf '0x%04X' "$(( 0x3000 + IFNUM ))")"
   local SRC; SRC="$(ip -4 -o addr show dev "$NIC" 2>/dev/null | awk '{split($4,a,"/");print a[1]}')" || true
-  [[ -n "${SRC:-}" ]] || { echo "skip $NIC: no IPv4"; return 0; }
+  [[ -n "${SRC:-}" ]] || { echo "skip $NIC: no IPv4"; return; }
 
-  umask 077
-  local SRV_PRIV="" PORT="" PEERS=""
-
-  if [[ -f "$CONF" ]]; then
-    IFS='|' read -r SRV_PRIV PORT < <(parse_priv_port "$CONF")
-  fi
-
+  umask 077; local SRV_PRIV="" PORT="" PEERS=""
+  if [[ -f "$CONF" ]]; then IFS='|' read -r SRV_PRIV PORT < <(parse_priv_port "$CONF"); fi
   if [[ -z "${SRV_PRIV:-}" || -z "${PORT:-}" || -z "${PEERS:-}" ]]; then
     local RUN; RUN="$(wg showconf "$IFACE" 2>/dev/null || true)"
     [[ -z "${SRV_PRIV:-}" ]] && SRV_PRIV="$(awk '/^PrivateKey/{print $3;exit}' <<<"$RUN" || true)"
     [[ -z "${PORT:-}"     ]] && PORT="$(awk '/^ListenPort/{print $3;exit}' <<<"$RUN" || true)"
     [[ -z "${PEERS:-}"    ]] && PEERS="$(awk 'BEGIN{p=0} /^\[Peer\]/{p=1} p' <<<"$RUN")"
   fi
+  PORT="${PORT:-$DEFAULT_PORT}"; SRV_PRIV="$(normalize_b64 "${SRV_PRIV:-}")"; [[ -n "${SRV_PRIV:-}" ]] || SRV_PRIV="$(wg genkey)"
+  if [[ -z "${PEERS:-}" && -f "$CONF" ]]; then PEERS="$(awk 'BEGIN{keep=0} /^\[Peer\]/{keep=1} {if(keep)print}' "$CONF")"; fi
 
-  PORT="${PORT:-$DEFAULT_PORT}"
-  SRV_PRIV="$(normalize_b64 "${SRV_PRIV:-}")"
-  [[ -n "${SRV_PRIV:-}" ]] || SRV_PRIV="$(wg genkey)"
-
-  if [[ -z "${PEERS:-}" && -f "$CONF" ]]; then
-    PEERS="$(awk 'BEGIN{keep=0} /^\[Peer\]/{keep=1} {if(keep)print}' "$CONF")"
-  fi
-
-  local TMPDIR TMP
-  TMPDIR="$(mktemp -d)"
-  TMP="${TMPDIR}/${IFACE}.conf"
+  local TMPDIR TMP; TMPDIR="$(mktemp -d)"; TMP="${TMPDIR}/${IFACE}.conf"
   cat >"$TMP" <<CFG
 [Interface]
 Address = ${GIP}
@@ -202,11 +148,8 @@ PostDown = /usr/local/sbin/wg-mi-postdown ${NIC} ${SUBNET} ${TBL} ${PRI} ${PORT}
 
 ${PEERS}
 CFG
-
   wg-quick strip "$TMP" >/dev/null
-  install -m 600 "$TMP" "$CONF"
-  rm -rf "$TMPDIR"
-
+  install -m 600 "$TMP" "$CONF"; rm -rf "$TMPDIR"
   systemctl enable "wg-quick@${IFACE}" >/dev/null
   systemctl restart "wg-quick@${IFACE}"
 
@@ -219,33 +162,26 @@ CFG
 
   echo "UP ${IFACE} (${SUBNET} via ${NIC}, port ${PORT}, fwmark ${FWMARK_HEX})"
 }
-
-main(){
-  mapfile -t NICS < <(get_nics)
-  ((${#NICS[@]})) || { echo "no ensNN"; exit 1; }
-  for n in "${NICS[@]}"; do setup_one "$n"; done
-}
+main(){ mapfile -t NICS < <(get_nics); ((${#NICS[@]})) || { echo "no ensNN"; exit 1; }; for n in "${NICS[@]}"; do setup_one "$n"; done; }
 main
 EOF
 chmod 755 "${BASE}/setup_wg_iface.sh"
 
-# ==== 부팅 자동 재적용 ====
+# ===== 부팅 자동 재적용 =====
 cat >/etc/systemd/system/wg-reinit.service <<'EOF'
 [Unit]
 Description=Reinit WireGuard IFs after boot (ensNN auto)
 After=network-online.target
 Wants=network-online.target
-
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/bash /home/script/wg/setup_wg_iface.sh
-
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl enable wg-reinit.service
 
-# ==== 유저 add (Keepalive=10s) ====
+# ===== 유저 add (Name-only, Keepalive=10s) =====
 cat >"${BASE}/wg-add-user.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -265,7 +201,6 @@ CLT_PRIV="$(wg genkey)"; CLT_PUB="$(printf "%s" "$CLT_PRIV" | wg pubkey)"
 wg set ${IFACE} peer "$CLT_PUB" allowed-ips "${CLT_IP}/32" persistent-keepalive 10
 cat >> "$CONF" <<EOC
 
-# ${USER}
 [Peer]
 # Name = ${USER}
 PublicKey = ${CLT_PUB}
@@ -292,30 +227,88 @@ command -v qrencode >/dev/null && qrencode -t ansiutf8 < "$USER_CONF" || true
 EOF
 chmod 755 "${BASE}/wg-add-user.sh"
 
-# ==== 유저 del ====
+# ===== 유저 del (Name 우선, 과거 주석/키 지원, 라인번호 기반) =====
 cat >"${BASE}/wg-del-user.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
 IFACE="${1:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"; ID="${2:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"
 CONF="/etc/wireguard/${IFACE}.conf"; [[ -f "$CONF" ]] || { echo "no conf: $CONF"; exit 1; }
-if [[ "$ID" =~ ^[A-Za-z0-9+/=]{40,}$ ]]; then PUB="$ID"; else
-  PUB="$(awk -v u="$ID" '$0 ~ "^# "u"$"{f=1} f&&/^PublicKey/{gsub(/[[:space:]]/,"");split($0,a,"=");print a[2];exit} /^\[Peer\]/{f=0}' "$CONF")"
+
+is_key='^[A-Za-z0-9+/=]{40,}$'
+PUB=""; S=""; E=""
+
+if [[ "$ID" =~ $is_key ]]; then
+  PUB="$ID"
+else
+  # 1) "# Name = <ID>" 있는 Peer 블록 라인 범위
+  read S E <<<"$(awk -v u="$ID" '
+    BEGIN{in=0; s=0; e=0; hit=0}
+    $0=="[Peer]" { if(in && hit){ e=NR-1; print s, e; exit } in=1; s=NR; hit=0; next }
+    in && /^#[[:space:]]*Name[[:space:]]*=/{
+      t=$0; sub(/.*=/,"",t); gsub(/^[[:space:]]+|[[:space:]]+$/,"",t); if(t==u) hit=1; next
+    }
+    END{ if(in && hit){ e=NR; print s, e } }
+  ' "$CONF")"
+  # 2) 폴백: 과거 "# <ID>" 단독 주석 블록
+  if [[ -z "${S:-}" || -z "${E:-}" ]]; then
+    read S E <<<"$(awk -v u="$ID" '
+      BEGIN{mark=0; in=0; s=0; e=0; hit=0}
+      /^#[[:space:]]*([^=].*)$/ { t=$0; sub(/^#[[:space:]]*/,"",t); if(t==u) mark=1; next }
+      $0=="[Peer]" {
+        if(in && hit){ e=NR-1; print s, e; exit }
+        in=1; s=NR; hit=0; next
+      }
+      in && mark && /^[[:space:]]*PublicKey[[:space:]]*=/ { hit=1; next }
+      END{ if(in && hit){ e=NR; print s, e } }
+    ' "$CONF")"
+  fi
+  # 3) 범위에서 PublicKey 추출
+  if [[ -n "${S:-}" && -n "${E:-}" ]]; then
+    PUB="$(awk -v s="$S" -v e="$E" 'NR>=s && NR<=e && /^[[:space:]]*PublicKey[[:space:]]*=/{
+      x=$0; sub(/.*=/,"",x); gsub(/[[:space:]]/,"",x); print x; exit }' "$CONF")"
+  fi
 fi
+
 [[ -n "${PUB:-}" ]] || { echo "peer not found: $ID"; exit 1; }
-wg set "$IFACE" peer "$PUB" remove
-awk -v pub="$PUB" 'BEGIN{RS="";ORS="\n\n"}{ if($0 ~ /\[Peer\]/ && $0 ~ ("PublicKey *= *"pub)) next; print }' "$CONF" | sed '/^$/d' > "${CONF}.new"
-install -m 600 "${CONF}.new" "$CONF"; rm -f "${CONF}.new"
+
+# 런타임 제거
+wg set "$IFACE" peer "$PUB" remove 2>/dev/null || true
+
+# 파일에서 블록 제거
+if [[ -z "${S:-}" || -z "${E:-}" ]]; then
+  # 키로 역탐색해서 범위 결정
+  read S E <<<"$(awk -v pk="$PUB" '
+    BEGIN{in=0; s=0; e=0; hit=0}
+    $0=="[Peer]" { if(in && hit){ e=NR-1; print s, e; exit } in=1; s=NR; hit=0; next }
+    in && /^[[:space:]]*PublicKey[[:space:]]*=/ {
+      t=$0; sub(/.*=/,"",t); gsub(/[[:space:]]/,"",t); if(t==pk) hit=1; next
+    }
+    END{ if(in && hit){ e=NR; print s, e } }
+  ' "$CONF")"
+fi
+[[ -n "${S:-}" && -n "${E:-}" ]] || { echo "block not found for pubkey"; exit 1; }
+
+TMP="$(mktemp)"
+awk -v s="$S" -v e="$E" 'NR<s || NR>e' "$CONF" > "$TMP"
+install -m600 "$TMP" "$CONF"; rm -f "$TMP"
+
+# 프로필 정리
+ENS="${IFACE#wg-}"
+rm -f "/home/script/wg/${ID}__${ENS}.conf" 2>/dev/null || true
 for f in /home/script/wg/*.conf; do
   [[ -f "$f" ]] || continue
-  if awk -F'= *' '/^PublicKey/{gsub(/[[:space:]]/,""); print $2}' "$f" | grep -qx "$PUB"; then
-    case "$f" in */${ID}__${IFACE#wg-}.conf|*/${PUB}__${IFACE#wg-}.conf) rm -f "$f";; esac
-  fi
+  k="$(awk -F'= *' '/^PublicKey/{gsub(/[[:space:]]/,""); print $2; exit}' "$f" 2>/dev/null || true)"
+  [[ "$k" == "$PUB" ]] && rm -f "$f" 2>/dev/null || true
 done
+
+# 파일 수정 반영(재기동 불필요)
+command -v wg-quick >/dev/null && wg syncconf "$IFACE" <(wg-quick strip "/etc/wireguard/${IFACE}.conf") || true
+
 echo "removed: $ID on ${IFACE}"
 EOF
 chmod 755 "${BASE}/wg-del-user.sh"
 
-# ==== uninstall (빠른 규칙 제거 + 코멘트 기반) ====
+# ===== uninstall (빠른 규칙 제거 + 코멘트 기반) =====
 cat >"$BIN/uninstall_wg.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -342,27 +335,15 @@ echo "[+] Remove NIC-bound INPUT filters (comment-tagged fast)"
 iptables -S INPUT | awk '/-m comment --comment "wg-mi:/ {sub("^-A INPUT ","",$0); print}' \
 | while read -r spec; do iptables -w 1 -D INPUT $spec 2>/dev/null || true; done
 
-# 혹시 남은 비태깅 규칙도 정리
-iptables -S INPUT \
-| awk '$0 ~ /-p udp/ && $0 ~ /--dport (500[0-9][0-9]|501[0-9][0-9]|502[0-4][0-9]|5025[0-4])/ && $0 ~ / -j DROP/ {sub("^-A INPUT ","",$0); print}' \
-| while read -r spec; do iptables -w 1 -D INPUT $spec 2>/dev/null || true; done
-iptables -S INPUT \
-| awk '$0 ~ /-p udp/ && $0 ~ /--dport (500[0-9][0-9]|501[0-9][0-9]|502[0-4][0-9]|5025[0-4])/ && $0 ~ / -i ens[0-9]+/ && $0 ~ / -j ACCEPT/ {sub("^-A INPUT ","",$0); print}' \
-| while read -r spec; do iptables -w 1 -D INPUT $spec 2>/dev/null || true; done
-
-echo "[+] Remove wg-reinit.service"
-systemctl disable wg-reinit.service 2>/dev/null || true
 rm -f /etc/systemd/system/wg-reinit.service
-
-echo "[+] Clean files"
-rm -rf /etc/wireguard /home/script/wg
 rm -f /etc/systemd/system/wg-quick@.service.d/override.conf
+rm -rf /etc/wireguard /home/script/wg
 systemctl daemon-reload
 echo "[+] Done."
 EOF
 chmod 755 "$BIN/uninstall_wg.sh"
 
-# ==== 초기 자동 구성 ====
+# ===== 초기 자동 구성 =====
 systemctl daemon-reload
 echo "[+] Running setup_wg_iface.sh (auto ensNN)"
 "$BASE/setup_wg_iface.sh" || echo "[WARN] setup_wg_iface.sh failed"
