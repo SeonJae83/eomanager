@@ -189,65 +189,65 @@ systemctl enable wg-reinit.service
 cat >"$BIN/wg-add-user.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
-IFACE="${1:?usage: wg-add-user <wg-ensNN> <username>}"
-USER="${2:?usage: wg-add-user <wg-ensNN> <username>}"
+WG_ADD_IFACE="${1:?usage: wg-add-user <wg-ensNN> <username>}"
+WG_ADD_USERNAME="${2:?usage: wg-add-user <wg-ensNN> <username>}"
 
-CONF="/etc/wireguard/${IFACE}.conf"; [[ -f "$CONF" ]] || { echo "no conf: $CONF"; exit 1; }
-NIC="${IFACE#wg-}"
+WG_ADD_CONF="/etc/wireguard/${WG_ADD_IFACE}.conf"; [[ -f "$WG_ADD_CONF" ]] || { echo "no conf: $WG_ADD_CONF"; exit 1; }
+WG_ADD_NIC="${WG_ADD_IFACE#wg-}"
 
-SRV_PUB="$(wg show ${IFACE} public-key 2>/dev/null || awk -F'= *' '/^PrivateKey/{print $2}' "$CONF" | head -n1 | wg pubkey)"
-SRV_PORT="$(awk -F'= *' '/^ListenPort/{print $2}' "$CONF")"
-SRV_IP="$(ip -4 -o addr show dev "${NIC}" | awk '{split($4,a,"/");print a[1]}')"
-BASE_NET="$(awk -F'[ ./]' '/^Address/{print $3"."$4"."$5}' "$CONF" | head -n1)"
+WG_ADD_SRV_PUB="$(wg show ${WG_ADD_IFACE} public-key 2>/dev/null || awk -F'= *' '/^PrivateKey/{print $2}' "$WG_ADD_CONF" | head -n1 | wg pubkey)"
+WG_ADD_SRV_PORT="$(awk -F'= *' '/^ListenPort/{print $2}' "$WG_ADD_CONF")"
+WG_ADD_SRV_IP="$(ip -4 -o addr show dev "${WG_ADD_NIC}" | awk '{split($4,a,"/");print a[1]}')"
+WG_ADD_BASE_NET="$(awk -F'[ ./]' '/^Address/{print $3"."$4"."$5}' "$WG_ADD_CONF" | head -n1)"
 
-mapfile -t __NAMES__ < <(
+mapfile -t WG_ADD_NAMES < <(
   awk '/^#[[:space:]]*Name[[:space:]]*=/{
          t=$0; sub(/.*=/,"",t);
          gsub(/^[[:space:]]+|[[:space:]]+$/,"",t);
          print t
-       }' "$CONF"
+       }' "$WG_ADD_CONF"
 )
-if printf '%s\n' "${__NAMES__[@]}" | grep -qxF "$USER"; then
-  echo "user name already exists on ${IFACE}: ${USER}" >&2
+if printf '%s\n' "${WG_ADD_NAMES[@]}" | grep -qxF "$WG_ADD_USERNAME"; then
+  echo "user name already exists on ${WG_ADD_IFACE}: ${WG_ADD_USERNAME}" >&2
   exit 3
 fi
 
-mapfile -t USED < <(wg show ${IFACE} allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1 | awk -F. -v b="$BASE_NET" '$1"."$2"."$3==b{print $4}' | sort -n)
-NEXT=2; for i in {2..254}; do if ! printf '%s\n' "${USED[@]}" | grep -qx "$i"; then NEXT="$i"; break; fi; done
-[[ $NEXT -le 254 ]] || { echo "pool exhausted"; exit 2; }
-CLT_IP="${BASE_NET}.${NEXT}"
+mapfile -t WG_ADD_USED < <(wg show ${WG_ADD_IFACE} allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1 | awk -F. -v b="$WG_ADD_BASE_NET" '$1"."$2"."$3==b{print $4}' | sort -n)
+WG_ADD_NEXT=2; for i in {2..254}; do if ! printf '%s\n' "${WG_ADD_USED[@]}" | grep -qx "$i"; then WG_ADD_NEXT="$i"; break; fi; done
+[[ $WG_ADD_NEXT -le 254 ]] || { echo "pool exhausted"; exit 2; }
+WG_ADD_CLT_IP="${WG_ADD_BASE_NET}.${WG_ADD_NEXT}"
 
 umask 077
-CLT_PRIV="$(wg genkey)"; CLT_PUB="$(printf "%s" "$CLT_PRIV" | wg pubkey)"
-wg set ${IFACE} peer "$CLT_PUB" allowed-ips "${CLT_IP}/32" persistent-keepalive 10
+WG_ADD_CLT_PRIV="$(wg genkey)"; WG_ADD_CLT_PUB="$(printf "%s" "$WG_ADD_CLT_PRIV" | wg pubkey)"
+wg set ${WG_ADD_IFACE} peer "$WG_ADD_CLT_PUB" allowed-ips "${WG_ADD_CLT_IP}/32" persistent-keepalive 10
 
-tail -c1 "$CONF" | read -r _ || echo >> "$CONF"
-cat >> "$CONF" <<EOC
+tail -c1 "$WG_ADD_CONF" | read -r _ || echo >> "$WG_ADD_CONF"
+cat >> "$WG_ADD_CONF" <<EOC
 
 [Peer]
-# Name = ${USER}
-PublicKey = ${CLT_PUB}
-AllowedIPs = ${CLT_IP}/32
+# Name = ${WG_ADD_USERNAME}
+PublicKey = ${WG_ADD_CLT_PUB}
+AllowedIPs = ${WG_ADD_CLT_IP}/32
 PersistentKeepalive = 10
 EOC
 
-USER_CONF="/home/script/wg/${USER}__${NIC}.conf"
-cat > "$USER_CONF" <<EOC
-# IFACE=${IFACE}
+WG_ADD_USER_CONF="/home/script/wg/${WG_ADD_USERNAME}__${WG_ADD_NIC}.conf"
+cat > "$WG_ADD_USER_CONF" <<EOC
+# IFACE=${WG_ADD_IFACE}
 [Interface]
-PrivateKey = ${CLT_PRIV}
-Address = ${CLT_IP}/32
+PrivateKey = ${WG_ADD_CLT_PRIV}
+Address = ${WG_ADD_CLT_IP}/32
 DNS = 168.126.63.1
 
 [Peer]
-PublicKey = ${SRV_PUB}
+PublicKey = ${WG_ADD_SRV_PUB}
 AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = ${SRV_IP}:${SRV_PORT}
+Endpoint = ${WG_ADD_SRV_IP}:${WG_ADD_SRV_PORT}
 PersistentKeepalive = 10
 EOC
-chmod 600 "$USER_CONF"
-echo "created: $USER_CONF"
-command -v qrencode >/dev/null && qrencode -t ansiutf8 < "$USER_CONF" || true
+chmod 600 "$WG_ADD_USER_CONF"
+echo "created: $WG_ADD_USER_CONF"
+command -v qrencode >/dev/null && qrencode -t ansiutf8 < "$WG_ADD_USER_CONF" || true
 EOF
 chmod 755 "$BIN/wg-add-user.sh"
 
@@ -255,24 +255,24 @@ chmod 755 "$BIN/wg-add-user.sh"
 cat >"$BIN/wg-del-user.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
-IFACE="${1:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"
-ID="${2:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"
-CONF="/etc/wireguard/${IFACE}.conf"
-[[ -f "$CONF" ]] || { echo "no conf: $CONF"; exit 1; }
+WG_DEL_IFACE="${1:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"
+WG_DEL_ID="${2:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"
+WG_DEL_CONF="/etc/wireguard/${WG_DEL_IFACE}.conf"
+[[ -f "$WG_DEL_CONF" ]] || { echo "no conf: $WG_DEL_CONF"; exit 1; }
 
-TS=$(date +%Y%m%d-%H%M%S)
-cp -a "$CONF" "${CONF}.bak.${TS}"
+WG_DEL_TS=$(date +%Y%m%d-%H%M%S)
+cp -a "$WG_DEL_CONF" "${WG_DEL_CONF}.bak.${WG_DEL_TS}"
 
-MODE="name"
-[[ "$ID" =~ ^[A-Za-z0-9+/=]{40,}$ ]] && MODE="key"
+WG_DEL_MODE="name"
+[[ "$WG_DEL_ID" =~ ^[A-Za-z0-9+/=]{40,}$ ]] && WG_DEL_MODE="key"
 
-TMP="$(mktemp)"
-awk -v RS="" -v ORS="\n\n" -v mode="$MODE" -v id="$ID" '
+WG_DEL_TMP="$(mktemp)"
+awk -v RS="" -v ORS="\n\n" -v mode="$WG_DEL_MODE" -v id="$WG_DEL_ID" '
   BEGIN{drop=0}
   /\[Peer\]/ {
     name=""; pub="";
     if (match($0, /(^|\n)[[:space:]]*#[[:space:]]*Name[[:space:]]*=[[:space:]]*([^\n\r]+)/, m)) {
-      name=m[2]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name);
+      name=m[2]; gsub(/^[[:space:]]+|[[:space:]]+$/,"",name);
     }
     if (match($0, /(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*([A-Za-z0-9+\/=]+)/, k)) {
       pub=k[2];
@@ -287,21 +287,21 @@ awk -v RS="" -v ORS="\n\n" -v mode="$MODE" -v id="$ID" '
     if (drop==0) exit 10;
     if (drop>1)  exit 11;
   }
-' "$CONF" > "$TMP" || rc=$?
+' "$WG_DEL_CONF" > "$WG_DEL_TMP" || rc=$?
 
 if [[ "${rc:-0}" -eq 10 ]]; then
-  echo "peer not found: $ID"; rm -f "$TMP"; exit 1
+  echo "peer not found: $WG_DEL_ID"; rm -f "$WG_DEL_TMP"; exit 1
 elif [[ "${rc:-0}" -eq 11 ]]; then
-  echo "multiple peers matched; abort (ID=$ID)"; rm -f "$TMP"; exit 1
+  echo "multiple peers matched; abort (ID=$WG_DEL_ID)"; rm -f "$WG_DEL_TMP"; exit 1
 fi
 
-install -m600 "$TMP" "$CONF"; rm -f "$TMP"
-wg syncconf "$IFACE" <(wg-quick strip "$CONF") || true
+install -m600 "$WG_DEL_TMP" "$WG_DEL_CONF"; rm -f "$WG_DEL_TMP"
+wg syncconf "$WG_DEL_IFACE" <(wg-quick strip "$WG_DEL_CONF") || true
 
-ENS="${IFACE#wg-}"
-rm -f "/home/script/wg/${ID}__${ENS}.conf" 2>/dev/null || true
+WG_DEL_ENS="${WG_DEL_IFACE#wg-}"
+rm -f "/home/script/wg/${WG_DEL_ID}__${WG_DEL_ENS}.conf" 2>/dev/null || true
 
-echo "removed: $ID on ${IFACE} (backup: ${CONF}.bak.${TS})"
+echo "removed: $WG_DEL_ID on ${WG_DEL_IFACE} (backup: ${WG_DEL_CONF}.bak.${WG_DEL_TS})"
 EOF
 chmod 755 "$BIN/wg-del-user.sh"
 
@@ -310,71 +310,79 @@ cat >"$BIN/wg-list-users.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
 export LC_ALL=C
-list_file() {
-  local CONF="$1"
-  [[ -f "$CONF" ]] || { echo "[WARN] skip (no file): $CONF" >&2; return; }
-  echo "== $CONF =="
+wg_list_file() {
+  local WG_L_CONF="$1"
+  [[ -f "$WG_L_CONF" ]] || { echo "[WARN] skip (no file): $WG_L_CONF" >&2; return; }
+  echo "== $WG_L_CONF =="
   awk -v RS="" '
     /\[Peer\]/ {
       name=""; pub="";
       if (match($0, /(^|\n)[[:space:]]*#[[:space:]]*Name[[:space:]]*=[[:space:]]*([^\n\r]+)/, m)) {
-        name=m[2]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name);
+        name=m[2]; gsub(/^[[:space:]]+|[[:space:]]+$/,"",name);
       }
       if (match($0, /(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*([A-Za-z0-9+\/=]+)/, k)) {
         pub=k[2];
       }
       printf("name=%s  pub=%s\n", name, pub);
     }
-  ' "$CONF"
+  ' "$WG_L_CONF"
 }
 if [[ $# -ge 1 ]]; then
-  list_file "$1"
+  wg_list_file "$1"
 else
   shopt -s nullglob
   files=(/etc/wireguard/wg-ens*.conf)
   (( ${#files[@]} )) || { echo "[INFO] no wg-ens*.conf under /etc/wireguard" >&2; exit 0; }
-  for f in "${files[@]}"; do list_file "$f"; done
+  for f in "${files[@]}"; do wg_list_file "$f"; done
 fi
 EOF
 chmod 755 "$BIN/wg-list-users.sh"
 
-# ===== find-user (180초 이내 True, 초과 False) =====
+# ===== find-user (네임스페이스화, 충돌 제거) =====
 cat >"$BIN/wg-find-user.sh" <<"EOF"
 #!/usr/bin/env bash
 # usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]
 set -euo pipefail
-IFACE="${1:?usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]}"
-USER="${2:?usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]}"
-THRESHOLD="${3:-180}"
+wg_find_main() {
+  local WG_FIND_IFACE="${1:?usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]}"
+  local WG_FIND_USERNAME="${2:?usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]}"
+  local WG_FIND_THRESHOLD="${3:-180}"
 
-CONF="/etc/wireguard/${IFACE}.conf"
-[[ -f "$CONF" ]] || { echo "conf not found: $CONF" >&2; exit 1; }
+  local WG_FIND_CONF="/etc/wireguard/${WG_FIND_IFACE}.conf"
+  [[ -f "$WG_FIND_CONF" ]] || { echo "conf not found: $WG_FIND_CONF" >&2; return 1; }
 
-PUBKEY="$(awk -v u="$USER" -v RS="" '
-  /^\[Peer\]/{ name=""; pub="";
-    if (match($0, /(^|\n)[[:space:]]*#[[:space:]]*Name[[:space:]]*=[[:space:]]*([^\n\r]+)/, m)) {
-      name=m[2]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name);
+  local WG_FIND_PUBKEY
+  WG_FIND_PUBKEY="$(
+    awk -v RS="" -v ORS="\n\n" -v WG_USERNAME="$WG_FIND_USERNAME" '
+      /^\[Peer\]/ {
+        name=""; pub="";
+        if (match($0, /(^|\n)[[:space:]]*#[[:space:]]*Name[[:space:]]*=[[:space:]]*([^\n\r]+)/, m)) {
+          name=m[2]; gsub(/^[[:space:]]+|[[:space:]]+$/,"",name);
+        }
+        if (match($0, /(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*([A-Za-z0-9+\/=]+)/, k)) {
+          pub=k[2];
+        }
+        if (name==WG_USERNAME) { print pub; exit }
+      }
+    ' "$WG_FIND_CONF"
+  )"
+  [[ -n "${WG_FIND_PUBKEY:-}" ]] || { echo "user ${WG_FIND_USERNAME} not found in ${WG_FIND_CONF}" >&2; return 2; }
+
+  wg show "$WG_FIND_IFACE" dump | awk -v WG_PUB="$WG_FIND_PUBKEY" -v WG_TH="$WG_FIND_THRESHOLD" '
+    BEGIN{found=0}
+    $1==WG_PUB{
+      found=1
+      t=$5
+      if (t==0) { print "False (never)"; next }
+      age = systime()-t
+      if (age>WG_TH) print "False (" age "s)"
+      else print "True (" age "s)"
     }
-    if (match($0, /(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*([A-Za-z0-9+\/=]+)/, k)) {
-      pub=k[2];
-    }
-    if (name==u) { print pub; exit }
-  }' "$CONF")"
-[[ -n "${PUBKEY:-}" ]] || { echo "user ${USER} not found in ${CONF}" >&2; exit 2; }
-
-wg show "$IFACE" dump | awk -v k="$PUBKEY" -v TH="$THRESHOLD" '
-BEGIN{found=0}
-$1==k{
-  found=1
-  t=$5
-  if (t==0) { print "False (never)"; next }
-  age = systime()-t
-  if (age>TH) print "False (" age "s)"
-  else print "True (" age "s)"
+    END{
+      if (!found) print "peer-not-in-dump"
+    }'
 }
-END{
-  if (!found) print "peer-not-in-dump"
-}'
+wg_find_main "$@"
 EOF
 chmod 755 "$BIN/wg-find-user.sh"
 
