@@ -2,7 +2,7 @@
 # install_wg_full.sh — multi-IF WireGuard FULL (무인자 자동, 안전 del)
 # - ensNN 자동 + per-IF policy routing + SNAT + FwMark(응답 경로 고정)
 # - NIC:PORT 입력 필터(코멘트 태깅)
-# - add/del 유틸(정확일치, del은 단락 파서+백업+syncconf), list 유틸
+# - add/del 유틸(정확일치, del은 단락 파서+백업+syncconf), list 유틸, find-user 유틸
 # - 부팅 후 재적용(wg-reinit.service), network-online 이후
 # - uninstall 포함 (OpenVPN/기존 SNAT 훼손 없음)
 set -euo pipefail
@@ -33,7 +33,6 @@ cat >"$BIN/wg-mi-postup" <<"EOF"
 set -Eeu -o pipefail
 NIC="$1"; IFACE="$2"; SUBNET="$3"; TBL="$4"; PRI="$5"; PORT="$6"
 
-# NIC 상태/경로 파악
 for _ in {1..50}; do
   SRC=$(ip -4 -o addr show dev "$NIC" | awk '{split($4,a,"/");print a[1]}') || true
   NET=$(ip -4 route show dev "$NIC" | awk '/proto kernel/ {print $1;exit}') || true
@@ -43,29 +42,24 @@ for _ in {1..50}; do
 done
 [[ -z "${SRC:-}" || -z "${NET:-}" || -z "${GW:-}" ]] && { echo "[wg-mi-postup] missing param" >&2; exit 0; }
 
-# 정책 라우팅(rp_filter loose)
 sysctl -wq "net.ipv4.conf.$NIC.rp_filter=2" || true
 sysctl -wq "net.ipv4.conf.$IFACE.rp_filter=2" || true
 ip route replace table "$TBL" "$NET" dev "$NIC" scope link src "$SRC" || true
 ip route replace table "$TBL" default via "$GW" dev "$NIC" onlink src "$SRC" || true
 ip rule add from "$SUBNET" lookup "$TBL" priority "$PRI" 2>/dev/null || true
 
-# fwmark -> 응답경로 고정
 IFNUM="$(sed 's/[^0-9]//g' <<<"$NIC")"
 FWMARK_HEX="$(printf '0x%04X' "$(( 0x3000 + IFNUM ))")"
 ip rule add fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null || true
 
-# SNAT
 iptables -w 1 -t nat -C POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC" 2>/dev/null \
   || iptables -w 1 -t nat -A POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC"
 
-# 입력 필터(NIC:PORT만 허용, 동일 포트 타 NIC 드롭)
 iptables -w 1 -C INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:$NIC:$PORT:ACCEPT" -j ACCEPT 2>/dev/null || \
 iptables -w 1 -I INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:$NIC:$PORT:ACCEPT" -j ACCEPT
 iptables -w 1 -C INPUT -p udp --dport "$PORT" -m comment --comment "wg-mi:*:$PORT:DROP" -j DROP 2>/dev/null || \
 iptables -w 1 -A INPUT -p udp --dport "$PORT" -m comment --comment "wg-mi:*:$PORT:DROP" -j DROP
 
-# 이웃 캐시 예열
 ping -c1 -W1 "$GW" >/dev/null 2>&1 || true
 EOF
 chmod 755 "$BIN/wg-mi-postup"
@@ -77,7 +71,6 @@ set -Eeu -o pipefail
 NIC="$1"; SUBNET="$2"; TBL="$3"; PRI="$4"; PORT="$5"
 SRC="$(ip -4 -o addr show dev "$NIC" 2>/dev/null | awk '{split($4,a,"/");print a[1]}')" || true
 
-# INPUT 필터 제거(코멘트 태그)
 iptables -S INPUT | awk -v nic="$NIC" -v port="$PORT" '
 /^-A INPUT/ && /-p udp/ && ("--dport "port) && /-m comment --comment "wg-mi:/ {
   if ($0 ~ "wg-mi:"nic":"port":ACCEPT" || $0 ~ "wg-mi:\\*:"port":DROP") {
@@ -85,23 +78,20 @@ iptables -S INPUT | awk -v nic="$NIC" -v port="$PORT" '
   }
 }' | while read -r spec; do iptables -w 1 -D INPUT $spec 2>/dev/null || true; done
 
-# SNAT 제거
 if [[ -n "${SRC:-}" ]]; then
   iptables -w 1 -t nat -D POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC" 2>/dev/null || true
 fi
 
-# 정책 라우팅 제거
 ip rule del from "$SUBNET" lookup "$TBL" priority "$PRI" 2>/dev/null || true
 ip route flush table "$TBL" 2>/dev/null || true
 
-# fwmark 제거
 IFNUM="$(sed 's/[^0-9]//g' <<<"$NIC")"
 FWMARK_HEX="$(printf '0x%04X' "$(( 0x3000 + IFNUM ))")"
 ip rule del fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null || true
 EOF
 chmod 755 "$BIN/wg-mi-postdown"
 
-# ===== setup_wg_iface.sh — ensNN 자동 (BIN으로 이동) =====
+# ===== setup_wg_iface.sh — ensNN 자동 =====
 cat >"$BIN/setup_wg_iface.sh" <<"EOF"
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -195,7 +185,7 @@ WantedBy=multi-user.target
 EOF
 systemctl enable wg-reinit.service
 
-# ===== add-user (정확일치 중복차단, DNS=168.126.63.1) — BIN으로 이동 =====
+# ===== add-user (정확일치 중복차단, DNS=168.126.63.1) =====
 cat >"$BIN/wg-add-user.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -210,7 +200,6 @@ SRV_PORT="$(awk -F'= *' '/^ListenPort/{print $2}' "$CONF")"
 SRV_IP="$(ip -4 -o addr show dev "${NIC}" | awk '{split($4,a,"/");print a[1]}')"
 BASE_NET="$(awk -F'[ ./]' '/^Address/{print $3"."$4"."$5}' "$CONF" | head -n1)"
 
-# 정확일치 중복 이름 차단
 mapfile -t __NAMES__ < <(
   awk '/^#[[:space:]]*Name[[:space:]]*=/{
          t=$0; sub(/.*=/,"",t);
@@ -223,18 +212,15 @@ if printf '%s\n' "${__NAMES__[@]}" | grep -qxF "$USER"; then
   exit 3
 fi
 
-# 다음 /32 할당
 mapfile -t USED < <(wg show ${IFACE} allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1 | awk -F. -v b="$BASE_NET" '$1"."$2"."$3==b{print $4}' | sort -n)
 NEXT=2; for i in {2..254}; do if ! printf '%s\n' "${USED[@]}" | grep -qx "$i"; then NEXT="$i"; break; fi; done
 [[ $NEXT -le 254 ]] || { echo "pool exhausted"; exit 2; }
 CLT_IP="${BASE_NET}.${NEXT}"
 
-# 키 생성 & 런타임 반영
 umask 077
 CLT_PRIV="$(wg genkey)"; CLT_PUB="$(printf "%s" "$CLT_PRIV" | wg pubkey)"
 wg set ${IFACE} peer "$CLT_PUB" allowed-ips "${CLT_IP}/32" persistent-keepalive 10
 
-# 서버 conf append (단락 구분 한 줄 확보)
 tail -c1 "$CONF" | read -r _ || echo >> "$CONF"
 cat >> "$CONF" <<EOC
 
@@ -245,7 +231,6 @@ AllowedIPs = ${CLT_IP}/32
 PersistentKeepalive = 10
 EOC
 
-# 클라 프로필
 USER_CONF="/home/script/wg/${USER}__${NIC}.conf"
 cat > "$USER_CONF" <<EOC
 # IFACE=${IFACE}
@@ -266,10 +251,9 @@ command -v qrencode >/dev/null && qrencode -t ansiutf8 < "$USER_CONF" || true
 EOF
 chmod 755 "$BIN/wg-add-user.sh"
 
-# ===== del-user (단락 파서 + 백업 + 단일블록만 삭제 + syncconf) — BIN으로 이동 =====
+# ===== del-user (단락 파서 + 백업 + syncconf) =====
 cat >"$BIN/wg-del-user.sh" <<"EOF"
 #!/usr/bin/env bash
-# wg-del-user.sh — paragraph-safe deleter (exact match, single block only)
 set -euo pipefail
 IFACE="${1:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"
 ID="${2:?usage: wg-del-user <wg-ensNN> <username_or_pubkey>}"
@@ -283,7 +267,6 @@ MODE="name"
 [[ "$ID" =~ ^[A-Za-z0-9+/=]{40,}$ ]] && MODE="key"
 
 TMP="$(mktemp)"
-# 문단(RS="") 기준으로 [Peer] 블록만 검사, 매치된 블록만 drop
 awk -v RS="" -v ORS="\n\n" -v mode="$MODE" -v id="$ID" '
   BEGIN{drop=0}
   /\[Peer\]/ {
@@ -313,11 +296,8 @@ elif [[ "${rc:-0}" -eq 11 ]]; then
 fi
 
 install -m600 "$TMP" "$CONF"; rm -f "$TMP"
-
-# 런타임 sync (재시작 불필요)
 wg syncconf "$IFACE" <(wg-quick strip "$CONF") || true
 
-# 관련 프로필 제거(존재하면)
 ENS="${IFACE#wg-}"
 rm -f "/home/script/wg/${ID}__${ENS}.conf" 2>/dev/null || true
 
@@ -325,7 +305,7 @@ echo "removed: $ID on ${IFACE} (backup: ${CONF}.bak.${TS})"
 EOF
 chmod 755 "$BIN/wg-del-user.sh"
 
-# ===== list-users (변경 없음, BIN에 유지) =====
+# ===== list-users =====
 cat >"$BIN/wg-list-users.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -358,7 +338,47 @@ fi
 EOF
 chmod 755 "$BIN/wg-list-users.sh"
 
-# ===== uninstall (빠른 규칙 제거 + 코멘트 기반) =====
+# ===== find-user (180초 이내 True, 초과 False) =====
+cat >"$BIN/wg-find-user.sh" <<"EOF"
+#!/usr/bin/env bash
+# usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]
+set -euo pipefail
+IFACE="${1:?usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]}"
+USER="${2:?usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]}"
+THRESHOLD="${3:-180}"
+
+CONF="/etc/wireguard/${IFACE}.conf"
+[[ -f "$CONF" ]] || { echo "conf not found: $CONF" >&2; exit 1; }
+
+PUBKEY="$(awk -v u="$USER" -v RS="" '
+  /^\[Peer\]/{ name=""; pub="";
+    if (match($0, /(^|\n)[[:space:]]*#[[:space:]]*Name[[:space:]]*=[[:space:]]*([^\n\r]+)/, m)) {
+      name=m[2]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name);
+    }
+    if (match($0, /(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*([A-Za-z0-9+\/=]+)/, k)) {
+      pub=k[2];
+    }
+    if (name==u) { print pub; exit }
+  }' "$CONF")"
+[[ -n "${PUBKEY:-}" ]] || { echo "user ${USER} not found in ${CONF}" >&2; exit 2; }
+
+wg show "$IFACE" dump | awk -v k="$PUBKEY" -v TH="$THRESHOLD" '
+BEGIN{found=0}
+$1==k{
+  found=1
+  t=$5
+  if (t==0) { print "False (never)"; next }
+  age = systime()-t
+  if (age>TH) print "False (" age "s)"
+  else print "True (" age "s)"
+}
+END{
+  if (!found) print "peer-not-in-dump"
+}'
+EOF
+chmod 755 "$BIN/wg-find-user.sh"
+
+# ===== uninstall =====
 cat >"$BIN/uninstall_wg.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -402,4 +422,5 @@ echo "[OK] WireGuard ready for all ensNN."
 echo "Add user: $BIN/wg-add-user.sh wg-ens33 <user>"
 echo "Del user: $BIN/wg-del-user.sh wg-ens33 <user>"
 echo "List users: $BIN/wg-list-users.sh [/etc/wireguard/wg-ensNN.conf]"
+echo "Find user(active<=180s?): $BIN/wg-find-user.sh wg-ens33 <user> [threshold]"
 echo "Uninstall: $BIN/uninstall_wg.sh"
