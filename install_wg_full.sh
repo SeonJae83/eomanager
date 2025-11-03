@@ -101,8 +101,8 @@ ip rule del fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null
 EOF
 chmod 755 "$BIN/wg-mi-postdown"
 
-# ===== setup_wg_iface.sh — ensNN 자동 =====
-cat >"${BASE}/setup_wg_iface.sh" <<"EOF"
+# ===== setup_wg_iface.sh — ensNN 자동 (BIN으로 이동) =====
+cat >"$BIN/setup_wg_iface.sh" <<"EOF"
 #!/usr/bin/env bash
 set -Eeuo pipefail
 trap 'echo "[ERR] line:$LINENO cmd:$BASH_COMMAND" >&2' ERR
@@ -179,7 +179,7 @@ CFG
 main(){ mapfile -t NICS < <(get_nics); ((${#NICS[@]})) || { echo "no ensNN"; exit 1; }; for n in "${NICS[@]}"; do setup_one "$n"; done; }
 main
 EOF
-chmod 755 "${BASE}/setup_wg_iface.sh"
+chmod 755 "$BIN/setup_wg_iface.sh"
 
 # ===== 부팅 자동 재적용 =====
 cat >/etc/systemd/system/wg-reinit.service <<'EOF'
@@ -189,14 +189,14 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash /home/script/wg/setup_wg_iface.sh
+ExecStart=/usr/bin/bash /usr/local/sbin/setup_wg_iface.sh
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl enable wg-reinit.service
 
-# ===== add-user (정확일치 중복차단, DNS=168.126.63.1) =====
-cat >"${BASE}/wg-add-user.sh" <<"EOF"
+# ===== add-user (정확일치 중복차단, DNS=168.126.63.1) — BIN으로 이동 =====
+cat >"$BIN/wg-add-user.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
 IFACE="${1:?usage: wg-add-user <wg-ensNN> <username>}"
@@ -264,10 +264,10 @@ chmod 600 "$USER_CONF"
 echo "created: $USER_CONF"
 command -v qrencode >/dev/null && qrencode -t ansiutf8 < "$USER_CONF" || true
 EOF
-chmod 755 "${BASE}/wg-add-user.sh"
+chmod 755 "$BIN/wg-add-user.sh"
 
-# ===== del-user (단락 파서 + 백업 + 단일블록만 삭제 + syncconf) =====
-cat >"${BASE}/wg-del-user.sh" <<"EOF"
+# ===== del-user (단락 파서 + 백업 + 단일블록만 삭제 + syncconf) — BIN으로 이동 =====
+cat >"$BIN/wg-del-user.sh" <<"EOF"
 #!/usr/bin/env bash
 # wg-del-user.sh — paragraph-safe deleter (exact match, single block only)
 set -euo pipefail
@@ -323,9 +323,9 @@ rm -f "/home/script/wg/${ID}__${ENS}.conf" 2>/dev/null || true
 
 echo "removed: $ID on ${IFACE} (backup: ${CONF}.bak.${TS})"
 EOF
-chmod 755 "${BASE}/wg-del-user.sh"
+chmod 755 "$BIN/wg-del-user.sh"
 
-# ===== list-users (단락 파서: name/pub 출력) =====
+# ===== list-users (변경 없음, BIN에 유지) =====
 cat >"$BIN/wg-list-users.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -396,10 +396,10 @@ chmod 755 "$BIN/uninstall_wg.sh"
 # ===== 초기 자동 구성 =====
 systemctl daemon-reload
 echo "[+] Running setup_wg_iface.sh (auto ensNN)"
-"$BASE/setup_wg_iface.sh" || echo "[WARN] setup_wg_iface.sh failed"
+"$BIN/setup_wg_iface.sh" || echo "[WARN] setup_wg_iface.sh failed"
 
 echo "[OK] WireGuard ready for all ensNN."
-echo "Add user: ${BASE}/wg-add-user.sh wg-ens33 <user>"
-echo "Del user: ${BASE}/wg-del-user.sh wg-ens33 <user>"
+echo "Add user: $BIN/wg-add-user.sh wg-ens33 <user>"
+echo "Del user: $BIN/wg-del-user.sh wg-ens33 <user>"
 echo "List users: $BIN/wg-list-users.sh [/etc/wireguard/wg-ensNN.conf]"
 echo "Uninstall: $BIN/uninstall_wg.sh"
