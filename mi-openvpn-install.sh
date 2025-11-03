@@ -2,7 +2,7 @@
 # mi-openvpn-install.sh — per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
 # - IF별 인스턴스, 관리포트, 정책라우팅, SNAT
 # - deny/allow ACL
-# - 훅: CN 디렉터리 정합화(STATUS와 비교해 이탈 토큰 삭제) + 토큰 생성
+# - 훅: CN 정합화(STATUS와 비교해 이탈 토큰 삭제) + 토큰 생성
 # - 동기화 타이머: 복원 + 2회 연속 미존재 감지 시 삭제 + 고아 .gone 청소
 # - DEL: deny 추가 + mgmt kill + 락 정리
 # - FIND: status-mi-ensXX.log 기반 CN 활동여부(True/False + age)
@@ -33,6 +33,9 @@ DELUSR=/usr/local/sbin/ovpn_del.sh
 LISTUSR=/usr/local/sbin/ovpn_list_users.sh
 FINDUSR=/usr/local/sbin/ovpn-find-user.sh
 UNINST=/usr/local/sbin/mi-openvpn-uninstall.sh
+
+# 혹시라도 외부에서 IFACE가 주입돼 있었다면 무시
+unset IFACE 2>/dev/null || true
 
 install -d -m0755 "$SRV_DIR" "$PROF_DIR" /usr/local/sbin "$ACL_DIR" "$RUN_DIR" "$LOCK_BASE"
 chown nobody:nogroup "$RUN_DIR" "$LOCK_BASE" || true
@@ -392,21 +395,21 @@ fi
 systemctl daemon-reload
 
 # ====== PER-IF INSTANCE ======
-for IFACE in "${IFACES[@]}"; do
-  IFNUM=$(sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p' <<<"$IFACE") || true
-  [[ -n "$IFNUM" ]] || { echo "[WARN] $IFACE: no number"; continue; }
-  SRV_IP=$(ip -o -4 addr show dev "$IFACE" | awk '/inet /{print $4}' | cut -d/ -f1 | head -n1)
-  NET=$(ip route show dev "$IFACE" | awk '/proto kernel/ {print $1; exit}')
-  GW=$(ip route show default | awk -v d="$IFACE" '$0 ~ (" dev " d "($| )"){print $3; exit}')
-  [[ -n "$SRV_IP" && -n "$GW" && -n "$NET" ]] || { echo "[WARN] $IFACE missing ip/gw/net"; continue; }
+for IFDEV in "${IFACES[@]}"; do
+  IFNUM=$(sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p' <<<"$IFDEV") || true
+  [[ -n "$IFNUM" ]] || { echo "[WARN] $IFDEV: no number"; continue; }
+  SRV_IP=$(ip -o -4 addr show dev "$IFDEV" | awk '/inet /{print $4}' | cut -d/ -f1 | head -n1)
+  NET=$(ip route show dev "$IFDEV" | awk '/proto kernel/ {print $1; exit}')
+  GW=$(ip route show default | awk -v d="$IFDEV" '$0 ~ (" dev " d "($| )"){print $3; exit}')
+  [[ -n "$SRV_IP" && -n "$GW" && -n "$NET" ]] || { echo "[WARN] $IFDEV missing ip/gw/net"; continue; }
 
   PORT=$((4100 + IFNUM)); (( PORT<=65535 )) || PORT=51194
   SUBNET=10.0.${IFNUM}.0; MASK=255.255.255.0
-  DEV=tun-mi-${IFACE}; SRV_CN=mi-srv-${IFACE}
-  CONF=$SRV_DIR/mi-${IFACE}.conf
+  DEV=tun-mi-${IFDEV}; SRV_CN=mi-srv-${IFDEV}
+  CONF=$SRV_DIR/mi-${IFDEV}.conf
   TABLE=tbl${IFNUM}; TNUM=$((100 + IFNUM)); PREF=$((10000 + IFNUM))
   MPORT=$((7000 + IFNUM*10))
-  ST_FILE="$RUN_DIR/status-mi-${IFACE}.log"
+  ST_FILE="$RUN_DIR/status-mi-${IFDEV}.log"
 
   [[ -f "$PKI_DIR/issued/${SRV_CN}.crt" ]] || ( cd "$EASYRSA_DIR" && ./easyrsa --batch build-server-full "$SRV_CN" nopass )
 
@@ -457,7 +460,7 @@ status $ST_FILE 1
 status-version 3
 
 # 훅/제한 환경
-setenv IFACE ${IFACE}
+setenv IFACE ${IFDEV}
 setenv-safe STATUS_FILE $ST_FILE
 # client-connect "/etc/openvpn/hooks-limit2.sh $ST_FILE"
 # client-disconnect "/etc/openvpn/hooks-limit2.sh $ST_FILE"
@@ -469,24 +472,24 @@ EOF
   install -o nobody -g nogroup -m 664 /dev/null "$ST_FILE"
 
   grep -q "^$TNUM $TABLE$" /etc/iproute2/rt_tables 2>/dev/null || echo "$TNUM $TABLE" >> /etc/iproute2/rt_tables
-  ip route replace "$NET" dev "$IFACE" proto kernel scope link src "$SRV_IP" table "$TABLE" || true
-  ip route replace default via "$GW" dev "$IFACE" src "$SRV_IP" table "$TABLE" || true
+  ip route replace "$NET" dev "$IFDEV" proto kernel scope link src "$SRV_IP" table "$TABLE" || true
+  ip route replace default via "$GW" dev "$IFDEV" src "$SRV_IP" table "$TABLE" || true
   while ip rule show | grep -q "from 10.0.${IFNUM}.0/24 lookup $TABLE"; do ip rule del from "10.0.${IFNUM}.0/24" table "$TABLE" 2>/dev/null || break; done
   ip rule add from "10.0.${IFNUM}.0/24" table "$TABLE" 2>/dev/null || true
   ip rule show | grep -q "from $SRV_IP/32 lookup $TABLE" || ip rule add pref "$PREF" from "$SRV_IP/32" lookup "$TABLE" 2>/dev/null || true
 
-  add_snat_rule "10.0.${IFNUM}.0/255.255.255.0" "$IFACE" "$SRV_IP"
-  open_if_port "$IFACE" "$SRV_IP" "$PORT" udp
+  add_snat_rule "10.0.${IFNUM}.0/255.255.255.0" "$IFDEV" "$SRV_IP"
+  open_if_port "$IFDEV" "$SRV_IP" "$PORT" udp
 
-  instdir="/etc/systemd/system/openvpn-server@mi-${IFACE}.service.d"; install -d -m0755 "$instdir"
-  cat > "$instdir/mi-route.conf" <<EOF
+  instdir="/etc/systemd/system/openvpn-server@mi-${IFDEV}.service.d"; install -d -m0755 "$instdir"
+  cat > "$instdir/mi-route.conf" <<EON
 [Service]
-ExecStartPost=-/usr/local/sbin/mi_route_repair.sh --only $IFACE
-EOF
+ExecStartPost=-/usr/local/sbin/mi_route_repair.sh --only $IFDEV
+EON
 
   systemctl daemon-reload
-  systemctl enable --now "openvpn-server@mi-${IFACE}.service" || true
-  echo "[OK] mi-${IFACE}: ${SRV_IP}:${PORT} mgmt 127.0.0.1:${MPORT} subnet 10.0.${IFNUM}.0/24"
+  systemctl enable --now "openvpn-server@mi-${IFDEV}.service" || true
+  echo "[OK] mi-${IFDEV}: ${SRV_IP}:${PORT} mgmt 127.0.0.1:${MPORT} subnet 10.0.${IFNUM}.0/24"
 done
 
 # ====== ROUTE REPAIR ======
@@ -585,6 +588,7 @@ echo "[DONE] MI OpenVPN uninstalled (no impact to other OpenVPN instances)"
 UN
 chmod 755 "$UNINST"
 
+# ====== ENABLE LOCK SYNC TIMER ======
 systemctl daemon-reload
 systemctl enable --now mi-lock-sync.timer
 
