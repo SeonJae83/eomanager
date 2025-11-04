@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# wg-openvpn-install.sh — per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
+# mi-openvpn-install.sh — per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
 # - IF별 인스턴스, 관리포트, 정책라우팅, SNAT
 # - deny/allow ACL
-# - 훅: CN 정합화(STATUS 비교) + 토큰 생성 + per-IF limit 적용
+# - 훅: CN 정합화(STATUS 비교) + per-IF limit 적용 + 토큰 생성
 # - LOCK SYNC 타이머
 # - DEL: deny 추가 + mgmt kill + 락 정리
 # - FIND: status-mi-ensXX.log 기반 CN 활동여부(True/False + age)
@@ -34,6 +34,9 @@ DELUSR=/usr/local/sbin/ovpn_del.sh
 LISTUSR=/usr/local/sbin/ovpn_list_users.sh
 FINDUSR=/usr/local/sbin/ovpn-find-user.sh
 UNINST=/usr/local/sbin/mi-openvpn-uninstall.sh
+
+# 부팅 후 1회 status 권한 고정
+STATUS_FIX_ONCE=/usr/local/sbin/mi_status_fix_once.sh
 
 unset IFACE 2>/dev/null || true
 
@@ -72,7 +75,7 @@ add_snat_rule(){ # per-IF SNAT
     || iptables -t nat -A MI-OVPN -s "$SUB" -o "$IFACE_P" -j SNAT --to-source "$SRCIP" -m comment --comment "mi-$IFACE_P"
 }
 
-# ===== HOOK: 최신본(요청안) =====
+# ===== HOOK: per-IF limit + ACL + 토큰락 =====
 cat > "$HOOK_LIMIT2" <<'HOOK'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -97,7 +100,7 @@ ALLOW_F="$ACL_DIR/allow-${IFACE}.list"
 if [[ -f "$ALLOW_F" ]] && ! grep -Fxq "$CN" "$ALLOW_F" 2>/dev/null; then exit 1; fi
 if [[ -f "$DENY_F" ]] &&  grep -Fxq "$CN" "$DENY_F" 2>/dev/null;  then exit 1; fi
 
-# CN 동시접속 한도: 인터페이스별만 사용
+# CN 동시접속 한도: 인터페이스별
 LIM_F="$ACL_DIR/limit-${IFACE}.list"
 if [[ -f "$LIM_F" ]]; then
   v="$(awk -v cn="$CN" '$1==cn{print $2; exit}' "$LIM_F" 2>/dev/null || true)"
@@ -357,7 +360,7 @@ fi
 
 systemctl daemon-reload
 
-# ===== PER-IF INSTANCE =====
+# ===== PER-IF INSTANCE 생성 =====
 for IFDEV in "${IFACES[@]}"; do
   IFNUM=$(sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p' <<<"$IFDEV") || true
   [[ -n "$IFNUM" ]] || { echo "[WARN] $IFDEV: no number"; continue; }
@@ -432,6 +435,7 @@ mute-replay-warnings
 verb 3
 EOF
 
+  # 초기 권한은 nobody:664로 생성(부팅 재생성은 onboot 서비스가 다시 보정)
   install -o nobody -g nogroup -m 664 /dev/null "$ST_FILE"
 
   grep -q "^$TNUM $TABLE$" /etc/iproute2/rt_tables 2>/dev/null || echo "$TNUM $TABLE" >> /etc/iproute2/rt_tables
@@ -456,7 +460,7 @@ EON
   echo "[OK] mi-${IFDEV}: ${SRV_IP}:${PORT} mgmt 127.0.0.1:${MPORT} subnet 10.0.${IFNUM}.0/24"
 done
 
-# ===== TEMPLATE DROP-INS: allow profile writes + root for Pre/Post =====
+# ===== TEMPLATE DROP-INS =====
 install -d -m0755 /etc/systemd/system/openvpn-server@.service.d
 tee /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf >/dev/null <<'EONP'
 [Service]
@@ -561,7 +565,6 @@ fix(){
 
 mapfile -t IFACES < <(ls /etc/openvpn/server/mi-*.conf 2>/dev/null | sed -e 's#.*/mi-##' -e 's#\.conf$##')
 for ifc in "${IFACES[@]}"; do
-  [[ -n "$only" && "$ifc" != "$only" ]] && continue
   fix "$ifc"
 done
 exit 0
@@ -571,6 +574,41 @@ chmod 755 "$REPAIR"
 # ===== ENABLE LOCK SYNC TIMER =====
 systemctl daemon-reload
 systemctl enable --now mi-lock-sync.timer
+
+# ===== 부팅시 1회 status 권한 고정 =====
+tee "$STATUS_FIX_ONCE" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+DIR=/run/openvpn-server
+DEADLINE=$((SECONDS+90))   # 부팅 직후 90초까지 대기
+while (( SECONDS < DEADLINE )); do
+  shopt -s nullglob
+  FILES=( "$DIR"/status-mi-*.log )
+  if (( ${#FILES[@]} )); then
+    chown nobody:nogroup "${FILES[@]}" || true
+    chmod 664 "${FILES[@]}" || true
+    exit 0
+  fi
+  sleep 1
+done
+exit 0
+EOF
+chmod 755 "$STATUS_FIX_ONCE"
+
+tee /etc/systemd/system/mi-status-fix-onboot.service >/dev/null <<'EOF'
+[Unit]
+Description=Fix OpenVPN status file perms once after boot
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mi_status_fix_once.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now mi-status-fix-onboot.service
 
 # ===== UNINSTALL =====
 cat > "$UNINST" <<'UN'
@@ -582,6 +620,8 @@ ACL_DIR=/etc/openvpn/acl; PROF_DIR=/home/script/openvpn/profile
 
 systemctl disable --now mi-lock-sync.timer 2>/dev/null || true
 systemctl disable --now mi-lock-sync.service 2>/dev/null || true
+systemctl disable --now mi-status-fix-onboot.service 2>/dev/null || true
+rm -f /usr/local/sbin/mi_status_fix_once.sh /etc/systemd/system/mi-status-fix-onboot.service 2>/dev/null || true
 
 CONFS=( $(ls -1 $SRV_DIR/mi-*.conf 2>/dev/null || true) )
 for C in "${CONFS[@]}"; do inst=$(basename "$C" .conf); systemctl disable --now "openvpn-server@${inst}.service" 2>/dev/null || true; done
@@ -590,7 +630,7 @@ rm -f /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf /etc/s
 systemctl daemon-reload || true
 
 for C in "${CONFS[@]}"; do
-  IP=$(awk '/^local /{print $2}' "$C"); PORT=$(awk '/^port /{print $2}' "$C"); PROTO=$(awk '/^proto /{print $2}' "$C"); IFACE=$(basename "$C" .conf | sed 's/^mi-//')
+  IP=$(awk '/^local /{print $2}' "$C"); IFACE=$(basename "$C" .conf | sed 's/^mi-//')
   while read -r line; do eval iptables "${line/-A /-D }" 2>/dev/null || true; done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true)
   if iptables -t nat -S MI-OVPN >/dev/null 2>&1; then
     SUBNET="10.0.$(sed -n 's/[^0-9]*\([0-9]\+\).*/\1/p' <<<"$IFACE").0/24"
@@ -624,18 +664,9 @@ echo "[DONE] MI OpenVPN uninstalled (no impact to other OpenVPN instances)"
 UN
 chmod 755 "$UNINST"
 
-# ===== ENABLE LOCK SYNC TIMER (again, idempotent) =====
+# ===== 완료 =====
 systemctl daemon-reload
-systemctl enable --now mi-lock-sync.timer
-
-# ===== Ensure HOOK + duplicate-cn 활성화(기존 conf 포함) =====
-chmod 755 /etc/openvpn/hooks-limit2.sh
-for c in /etc/openvpn/server/mi-*.conf; do
-  [[ -f "$c" ]] || continue
-  sed -i 's/^# \?duplicate-cn/duplicate-cn/' "$c"
-  sed -i 's|^# \?client-connect "/etc/openvpn/hooks-limit2.sh|client-connect "/etc/openvpn/hooks-limit2.sh|' "$c"
-  sed -i 's|^# \?client-disconnect "/etc/openvpn/hooks-limit2.sh|client-disconnect "/etc/openvpn/hooks-limit2.sh|' "$c"
-done
+systemctl enable --now mi-lock-sync.timer mi-status-fix-onboot.service
 
 echo "[DONE] install script finished"
 echo "UTILS:"
