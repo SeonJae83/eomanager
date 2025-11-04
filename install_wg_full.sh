@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# install_wg_full.sh — multi-IF WireGuard FULL (무인자 자동, 안전 del)
-# - ensNN 자동 + per-IF policy routing + SNAT + FwMark(응답 경로 고정)
-# - NIC:PORT 입력 필터(코멘트 태깅)
-# - add/del 유틸(정확일치, del은 단락 파서+백업+syncconf), list 유틸, find-user 유틸
-# - 부팅 후 재적용(wg-reinit.service), network-online 이후
-# - uninstall 포함 (OpenVPN/기존 SNAT 훼손 없음)
+# install_wg_full.sh — multi-IF WireGuard FULL
+# - ensNN 자동 구성 + per-IF policy routing + SNAT + FwMark
+# - add/del/list/find/ed(차단·복구) 유틸 포함
+# - wg-reinit.service 부팅 자동 재적용, network-online 이후
+# - uninstall 포함
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run as root"; exit 1; }
 
@@ -16,9 +15,9 @@ chmod 755 "$BASE"
 
 # ===== pkgs =====
 apt-get update -y >/dev/null 2>&1 || true
-apt-get install -y wireguard qrencode iproute2 >/dev/null 2>&1 || true
+apt-get install -y wireguard iproute2 >/dev/null 2>&1 || true
 
-# ===== wg-quick drop-in: network-online 이후 =====
+# ===== wg-quick drop-in =====
 cat >/etc/systemd/system/wg-quick@.service.d/override.conf <<'EOF'
 [Unit]
 After=network-online.target
@@ -26,7 +25,7 @@ Wants=network-online.target
 EOF
 systemctl daemon-reload
 
-# ===== helper: postup/postdown =====
+# ===== helper: postup/postdown (ACCEPT only) =====
 cat >"$BIN/wg-mi-postup" <<"EOF"
 #!/usr/bin/env bash
 # usage: wg-mi-postup <NIC> <IFACE> <SUBNET> <TBL> <PRI> <PORT>
@@ -40,10 +39,11 @@ for _ in {1..50}; do
   [[ -n "${SRC:-}" && -n "${NET:-}" && -n "${GW:-}" ]] && break
   sleep 0.1
 done
-[[ -z "${SRC:-}" || -z "${NET:-}" || -z "${GW:-}" ]] && { echo "[wg-mi-postup] missing param" >&2; exit 0; }
+[[ -z "${SRC:-}" || -z "${NET:-}" || -z "${GW:-}" ]] && exit 0
 
 sysctl -wq "net.ipv4.conf.$NIC.rp_filter=2" || true
 sysctl -wq "net.ipv4.conf.$IFACE.rp_filter=2" || true
+
 ip route replace table "$TBL" "$NET" dev "$NIC" scope link src "$SRC" || true
 ip route replace table "$TBL" default via "$GW" dev "$NIC" onlink src "$SRC" || true
 ip rule add from "$SUBNET" lookup "$TBL" priority "$PRI" 2>/dev/null || true
@@ -55,10 +55,9 @@ ip rule add fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null
 iptables -w 1 -t nat -C POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC" 2>/dev/null \
   || iptables -w 1 -t nat -A POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC"
 
-iptables -w 1 -C INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:$NIC:$PORT:ACCEPT" -j ACCEPT 2>/dev/null || \
-iptables -w 1 -I INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:$NIC:$PORT:ACCEPT" -j ACCEPT
-iptables -w 1 -C INPUT -p udp --dport "$PORT" -m comment --comment "wg-mi:*:$PORT:DROP" -j DROP 2>/dev/null || \
-iptables -w 1 -A INPUT -p udp --dport "$PORT" -m comment --comment "wg-mi:*:$PORT:DROP" -j DROP
+# INPUT ACCEPT만 추가 (DROP 없음)
+iptables -w 1 -C INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:${NIC}:${PORT}:ACCEPT" -j ACCEPT 2>/dev/null || \
+iptables -w 1 -I INPUT -i "$NIC" -p udp --dport "$PORT" -m comment --comment "wg-mi:${NIC}:${PORT}:ACCEPT" -j ACCEPT
 
 ping -c1 -W1 "$GW" >/dev/null 2>&1 || true
 EOF
@@ -71,27 +70,27 @@ set -Eeu -o pipefail
 NIC="$1"; SUBNET="$2"; TBL="$3"; PRI="$4"; PORT="$5"
 SRC="$(ip -4 -o addr show dev "$NIC" 2>/dev/null | awk '{split($4,a,"/");print a[1]}')" || true
 
+# INPUT ACCEPT만 정리
 iptables -S INPUT | awk -v nic="$NIC" -v port="$PORT" '
 /^-A INPUT/ && /-p udp/ && ("--dport "port) && /-m comment --comment "wg-mi:/ {
-  if ($0 ~ "wg-mi:"nic":"port":ACCEPT" || $0 ~ "wg-mi:\\*:"port":DROP") {
-    sub("^-A INPUT ",""); print
-  }
+  if ($0 ~ "wg-mi:"nic":"port":ACCEPT") { sub("^-A INPUT ",""); print }
 }' | while read -r spec; do iptables -w 1 -D INPUT $spec 2>/dev/null || true; done
 
+# NAT 정리
 if [[ -n "${SRC:-}" ]]; then
   iptables -w 1 -t nat -D POSTROUTING -s "$SUBNET" -o "$NIC" -j SNAT --to-source "$SRC" 2>/dev/null || true
 fi
 
+# 정책라우팅 정리
 ip rule del from "$SUBNET" lookup "$TBL" priority "$PRI" 2>/dev/null || true
 ip route flush table "$TBL" 2>/dev/null || true
-
 IFNUM="$(sed 's/[^0-9]//g' <<<"$NIC")"
 FWMARK_HEX="$(printf '0x%04X' "$(( 0x3000 + IFNUM ))")"
 ip rule del fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null || true
 EOF
 chmod 755 "$BIN/wg-mi-postdown"
 
-# ===== setup_wg_iface.sh — ensNN 자동 =====
+# ===== setup_wg_iface.sh — ensNN 자동(기존 키/피어 보존) =====
 cat >"$BIN/setup_wg_iface.sh" <<"EOF"
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -247,7 +246,6 @@ PersistentKeepalive = 10
 EOC
 chmod 600 "$WG_ADD_USER_CONF"
 echo "created: $WG_ADD_USER_CONF"
-command -v qrencode >/dev/null && qrencode -t ansiutf8 < "$WG_ADD_USER_CONF" || true
 EOF
 chmod 755 "$BIN/wg-add-user.sh"
 
@@ -310,10 +308,10 @@ cat >"$BIN/wg-list-users.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
 export LC_ALL=C
-wg_list_file() {
-  local WG_L_CONF="$1"
-  [[ -f "$WG_L_CONF" ]] || { echo "[WARN] skip (no file): $WG_L_CONF" >&2; return; }
-  echo "== $WG_L_CONF =="
+list_file() {
+  local CONF="$1"
+  [[ -f "$CONF" ]] || { echo "[WARN] skip (no file): $CONF" >&2; return; }
+  echo "== $CONF =="
   awk -v RS="" '
     /\[Peer\]/ {
       name=""; pub="";
@@ -325,20 +323,20 @@ wg_list_file() {
       }
       printf("name=%s  pub=%s\n", name, pub);
     }
-  ' "$WG_L_CONF"
+  ' "$CONF"
 }
 if [[ $# -ge 1 ]]; then
-  wg_list_file "$1"
+  list_file "$1"
 else
   shopt -s nullglob
   files=(/etc/wireguard/wg-ens*.conf)
   (( ${#files[@]} )) || { echo "[INFO] no wg-ens*.conf under /etc/wireguard" >&2; exit 0; }
-  for f in "${files[@]}"; do wg_list_file "$f"; done
+  for f in "${files[@]}"; do list_file "$f"; done
 fi
 EOF
 chmod 755 "$BIN/wg-list-users.sh"
 
-# ===== find-user (네임스페이스화, 충돌 제거) =====
+# ===== find-user (네임스페이스화) =====
 cat >"$BIN/wg-find-user.sh" <<"EOF"
 #!/usr/bin/env bash
 # usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]
@@ -386,12 +384,60 @@ wg_find_main "$@"
 EOF
 chmod 755 "$BIN/wg-find-user.sh"
 
+# ===== ed-user (enable/disable, Name 불변, 주석에 원키 저장) =====
+cat >"$BIN/wg-ed-user.sh" <<"EOF"
+#!/usr/bin/env bash
+# wg-ed-user.sh <wg-ensNN> <username> <enable|disable>
+set -euo pipefail
+I="${1:?iface}"; U="${2:?user}"; A="${3:?enable|disable}"
+C="/etc/wireguard/${I}.conf"; [[ -f "$C" ]] || { echo "no conf: $C" >&2; exit 1; }
+DENY="${WG_DENY_PUB:-COBLIX7ffX0CxUtkxgvmr1qRE91CNQHvhnU2z2RJ5G4=}"
+if ! { printf '%s' "$DENY" | base64 -d >/dev/null 2>&1 && [ "$(printf '%s' "$DENY" | base64 -d | wc -c)" -eq 32 ]; }; then
+  echo "invalid deny key" >&2; exit 2
+fi
+ts="$(date +%Y%m%d-%H%M%S)"; cp -a "$C" "${C}.bak.${ts}"
+tmp="$(mktemp)"
+awk -v RS="" -v ORS="\n\n" -v U="$U" -v A="$A" -v D="$DENY" '
+function trim(s){gsub(/^[ \t]+|[ \t]+$/,"",s);return s}
+BEGIN{found=0}
+{
+ if($0 ~ /^\[Peer\]/){
+   name=""; if(match($0,/(^|\n)[[:space:]]*#[[:space:]]*Name[[:space:]]*=[[:space:]]*([^\n\r]+)/,m)) name=trim(m[2]);
+   if(name==U){
+     found++
+     cur=""; if(match($0,/(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*([A-Za-z0-9+\/=]+)/,k)) cur=k[2];
+     orig=""; if(match($0,/(^|\n)[[:space:]]*#[[:space:]]*OrigPublicKey[[:space:]]*=[[:space:]]*([A-Za-z0-9+\/=]+)/,o)) orig=o[2];
+     if(A=="disable"){
+       if(orig=="") gsub(/(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*[A-Za-z0-9+\/=]+/,
+                         "\n# OrigPublicKey = " cur "\nPublicKey = " D, $0);
+       else         gsub(/(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*[A-Za-z0-9+\/=]+/,
+                         "\nPublicKey = " D, $0);
+       print $0; next
+     } else if(A=="enable"){
+       if(orig==""){ print "OrigPublicKey missing for user="U > "/dev/stderr"; exit 10 }
+       gsub(/(^|\n)[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*[A-Za-z0-9+\/=]+/,
+            "\nPublicKey = " orig, $0);
+       print $0; next
+     } else { print "action must be enable|disable" > "/dev/stderr"; exit 11 }
+   }
+ }
+ print $0
+}
+END{
+ if(found==0){ print "peer not found: "U > "/dev/stderr"; exit 12 }
+ if(found>1){ print "multiple peers matched for: "U > "/dev/stderr"; exit 13 }
+}
+' "$C" > "$tmp"
+install -m600 "$tmp" "$C"; rm -f "$tmp"
+wg syncconf "$I" <(wg-quick strip "$C") || { echo "syncconf failed; restored ${C}.bak.${ts}" >&2; cp -a "${C}.bak.${ts}" "$C"; exit 20; }
+echo "OK: $A $U on $I"
+EOF
+chmod 755 "$BIN/wg-ed-user.sh"
+
 # ===== uninstall =====
 cat >"$BIN/uninstall_wg.sh" <<"EOF"
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $EUID -eq 0 ]] || { echo "run as root"; exit 1; }
-
 echo "[+] Stop wg-quick services"
 systemctl list-units --type=service --all | awk '/wg-quick@wg-ens[0-9]+\.service/{print $1}' \
 | while read -r s; do systemctl stop "$s" 2>/dev/null || true; systemctl disable "$s" 2>/dev/null || true; done
@@ -409,8 +455,8 @@ echo "[+] Remove WG SNAT rules"
 iptables -t nat -S POSTROUTING | awk '/-s 10\.10\.[0-9]+\.0\/24/ && /-j SNAT/ {sub(/^-A POSTROUTING /,""); print}' \
 | while read -r spec; do iptables -w 1 -t nat -D POSTROUTING $spec 2>/dev/null || true; done
 
-echo "[+] Remove NIC-bound INPUT filters (comment-tagged fast)"
-iptables -S INPUT | awk '/-m comment --comment "wg-mi:/ {sub("^-A INPUT ","",$0); print}' \
+echo "[+] Remove INPUT ACCEPT tags"
+iptables -S INPUT | awk '/-m comment --comment "wg-mi:.*:[0-9]+:ACCEPT"/{sub("^-A INPUT ","",$0); print}' \
 | while read -r spec; do iptables -w 1 -D INPUT $spec 2>/dev/null || true; done
 
 rm -f /etc/systemd/system/wg-reinit.service
@@ -431,4 +477,5 @@ echo "Add user: $BIN/wg-add-user.sh wg-ens33 <user>"
 echo "Del user: $BIN/wg-del-user.sh wg-ens33 <user>"
 echo "List users: $BIN/wg-list-users.sh [/etc/wireguard/wg-ensNN.conf]"
 echo "Find user(active<=180s?): $BIN/wg-find-user.sh wg-ens33 <user> [threshold]"
+echo "Edit user(enable/disable): $BIN/wg-ed-user.sh wg-ens33 <user> <enable|disable>"
 echo "Uninstall: $BIN/uninstall_wg.sh"
