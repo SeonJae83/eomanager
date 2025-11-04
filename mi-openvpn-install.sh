@@ -2,8 +2,8 @@
 # mi-openvpn-install.sh — per-IF OpenVPN with CN 동시접속 제한(기본 1), ACL, token-locks, status-sync(복원+안전삭제)
 # - IF별 인스턴스, 관리포트, 정책라우팅, SNAT
 # - deny/allow ACL
-# - 훅: CN 정합화(STATUS와 비교해 이탈 토큰 삭제) + 토큰 생성
-# - LOCK SYNC 타이머(OK) / ROUTE REPAIR 타이머(사용 안 함)
+# - 훅: CN 정합화(STATUS 대조) + 토큰 생성
+# - LOCK SYNC 타이머(OK) / ROUTE REPAIR 타이머(미사용)
 # - DEL: deny 추가 + mgmt kill + 락 정리
 # - FIND: status-mi-ensXX.log 기반 CN 활동여부(True/False + age)
 set -Eeuo pipefail
@@ -11,7 +11,7 @@ LOGFILE=/var/log/mi-openvpn-install.log
 exec > >(tee -a "$LOGFILE") 2>&1
 trap 'echo "[ERR] line $LINENO: $BASH_COMMAND" >&2' ERR
 
-# ====== PARAM ======
+# ===== PARAM =====
 IFACES_INPUT="${1:-}"   # "ens34 ens35" 또는 "ens34,ens35"
 DNS1=168.126.63.1
 DNS2=168.126.63.2
@@ -44,7 +44,7 @@ d $LOCK_BASE 0755 nobody nogroup -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/openvpn-mi.conf >/dev/null 2>&1 || true
 
-# ====== PKGS ======
+# ===== PKGS =====
 if ! command -v openvpn >/dev/null 2>&1; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y openvpn easy-rsa iproute2 iptables jq lsof
@@ -53,21 +53,15 @@ else
 fi
 [[ -d /usr/share/easy-rsa ]] || { echo "[ERR] easy-rsa missing"; exit 1; }
 
-# ====== IPTABLES HELPERS ======
-open_if_port(){ # INPUT 허용 규칙 보장
+# ===== IPTABLES HELPERS =====
+open_if_port(){ # INPUT 허용
   local IFACE_P="${1:-}" IP="${2:-}" PORT="${3:-}" PROTO="${4:-udp}" TAG
   [[ -n "$IFACE_P" && -n "$IP" && -n "$PORT" ]] || return 0
   TAG="mi-${IFACE_P}"
   iptables -C INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "$TAG" 2>/dev/null \
     || iptables -I INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "$TAG"
 }
-cleanup_input_rules(){ # 해당 IF 코멘트 규칙 제거
-  local IFACE="$1"
-  while read -r line; do
-    [[ -n "$line" ]] || continue
-    eval iptables "${line/-A /-D }" 2>/dev/null || true
-  done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true)
-}
+cleanup_input_rules(){ local IFACE="$1"; while read -r line; do eval iptables "${line/-A /-D }" 2>/dev/null || true; done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true); }
 ensure_nat_chain(){ iptables -t nat -N MI-OVPN 2>/dev/null || true; iptables -t nat -C POSTROUTING -j MI-OVPN 2>/dev/null || iptables -t nat -I POSTROUTING -j MI-OVPN; }
 add_snat_rule(){ # per-IF SNAT
   local SUB="${1:-}" IFACE_P="${2:-}" SRCIP="${3:-}"
@@ -77,7 +71,7 @@ add_snat_rule(){ # per-IF SNAT
     || iptables -t nat -A MI-OVPN -s "$SUB" -o "$IFACE_P" -j SNAT --to-source "$SRCIP" -m comment --comment "mi-$IFACE_P"
 }
 
-# ====== HOOK: CN 정합화 + 토큰 생성 (기본 1개 제한)
+# ===== HOOK: CN 정합화 + 토큰 생성 =====
 cat > "$HOOK_LIMIT2" <<'HOOK'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -98,16 +92,12 @@ if [[ -f "$ALLOW_F" ]] && ! grep -Fxq "$CN" "$ALLOW_F" 2>/dev/null; then exit 1;
 if [[ -f "$DENY_F" ]] &&  grep -Fxq "$CN" "$DENY_F" 2>/dev/null;  then exit 1; fi
 mapfile -t EP_NOW < <(awk -F'[,\t ]+' -v cn="$CN" '$1=="CLIENT_LIST"&&$2==cn{print $3}' "$STATUS_FILE" 2>/dev/null)
 install -d -m0755 -o nobody -g nogroup "$BASE/$IFACE/$CN"
-prune_stale() {
-  local d="$1"; shift; local -A alive=(); for ep in "$@"; do alive["$ep"]=1; done
-  shopt -s nullglob; for lf in "$d"/*.lock; do ep="$(basename "$lf" .lock)"; [[ -n "${alive[$ep]:-}" ]] || rm -f "$lf"; done
-}
+prune_stale(){ local d="$1"; shift; local -A alive=(); for ep in "$@"; do alive["$ep"]=1; done; shopt -s nullglob; for lf in "$d"/*.lock; do ep="$(basename "$lf" .lock)"; [[ -n "${alive[$ep]:-}" ]] || rm -f "$lf"; done; }
 prune_stale "$BASE/$IFACE/$CN" "${EP_NOW[@]}"
 case "${script_type:-client-connect}" in
   client-connect)
-    sc=${#EP_NOW[@]}
-    lc=$(find "$BASE/$IFACE/$CN" -type f -name '*.lock' 2>/dev/null | wc -l | tr -d ' ')
-    c=$(( sc>lc ? sc : lc )); (( c >= MAX )) && exit 1
+    sc=${#EP_NOW[@]}; lc=$(find "$BASE/$IFACE/$CN" -type f -name '*.lock' 2>/dev/null | wc -l | tr -d ' '); c=$(( sc>lc ? sc : lc ))
+    (( c >= MAX )) && exit 1
     install -o nobody -g nogroup -m0644 /dev/null "$BASE/$IFACE/$CN/$TOKEN.lock"
     ;;
   client-disconnect)
@@ -119,7 +109,7 @@ exit 0
 HOOK
 chmod 755 "$HOOK_LIMIT2"
 
-# ====== LOCK SYNC ======
+# ===== LOCK SYNC =====
 cat > "$LOCKSYNC" <<'RB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -142,7 +132,6 @@ while IFS= read -r -d '' lf; do
     else : >"$mark"; fi
   fi
 done < <(find "$LOCK_DIR" -type f -name '*.lock' -print0 2>/dev/null)
-# 고아 .gone 40s 후 제거
 while IFS= read -r -d '' mg; do
   lf="${mg%.gone}"; rel="${lf#$LOCK_DIR/}"
   if [[ -n "${active[$rel]:-}" ]]; then rm -f "$mg" 2>/dev/null || true
@@ -178,7 +167,7 @@ Unit=mi-lock-sync.service
 WantedBy=timers.target
 TMR
 
-# ====== ADD USER ======
+# ===== ADD USER =====
 cat > "$ADDUSR" <<'ADDUSR'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -229,7 +218,7 @@ chmod 600 "$OUT"; echo "[OK] profile: $OUT"
 ADDUSR
 chmod 755 "$ADDUSR"
 
-# ====== DEL USER ======
+# ===== DEL USER =====
 cat > "$DELUSR" <<'DELUSR'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -250,7 +239,7 @@ echo "[OK] iface-revoke & kill: $USER on $IFACE"
 DELUSR
 chmod 755 "$DELUSR"
 
-# ====== LIST USERS ======
+# ===== LIST / FIND =====
 cat > "$LISTUSR" <<'LISTUSR'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -266,7 +255,6 @@ done
 LISTUSR
 chmod 755 "$LISTUSR"
 
-# ====== FIND USER ======
 cat > "$FINDUSR" <<'FIND'
 #!/usr/bin/env bash
 # usage: ovpn-find-user.sh <ensNN> <CN> [THRESHOLD_SEC]
@@ -288,7 +276,7 @@ END{ if (now==0 || lastref<0) { print "False (no-data)"; exit } age=now-lastref;
 FIND
 chmod 755 "$FINDUSR"
 
-# ====== RP_FILTER ======
+# ===== RP_FILTER =====
 apply_iface_sysctl(){
   : > /etc/sysctl.d/99-mi-openvpn-ifaces.conf
   for ifc in "$@"; do
@@ -298,7 +286,7 @@ apply_iface_sysctl(){
   sysctl --system >/dev/null
 }
 
-# ====== IFACE DISCOVERY ======
+# ===== IFACE DISCOVERY =====
 get_pub_ifaces(){
   ip -o -4 addr show up scope global | awk '{print $2}' | while read -r nic; do
     [[ "$nic" == "lo" ]] && continue
@@ -311,7 +299,7 @@ fi
 [[ ${#IFACES[@]} -gt 0 ]] || { echo "[ERR] no iface"; exit 1; }
 apply_iface_sysctl "${IFACES[@]}"
 
-# ====== PKI INIT ======
+# ===== PKI INIT =====
 if [[ ! -d "$EASYRSA_DIR" ]]; then
   cp -r /usr/share/easy-rsa "$EASYRSA_DIR"; chmod 755 "$EASYRSA_DIR"; cd "$EASYRSA_DIR"
   cat >"$EASYRSA_DIR/vars" <<'VARS'
@@ -333,7 +321,7 @@ fi
 
 systemctl daemon-reload
 
-# ====== PER-IF INSTANCE ======
+# ===== PER-IF INSTANCE =====
 for IFDEV in "${IFACES[@]}"; do
   IFNUM=$(sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p' <<<"$IFDEV") || true
   [[ -n "$IFNUM" ]] || { echo "[WARN] $IFDEV: no number"; continue; }
@@ -420,14 +408,17 @@ EOF
   add_snat_rule "10.0.${IFNUM}.0/255.255.255.0" "$IFDEV" "$SRV_IP"
   open_if_port "$IFDEV" "$SRV_IP" "$PORT" udp
 
+  # 인스턴스 드롭인: ExecStartPost 리페어(프로필 포함)
   instdir="/etc/systemd/system/openvpn-server@mi-${IFDEV}.service.d"; install -d -m0755 "$instdir"
   cat > "$instdir/mi-route.conf" <<EON
 [Service]
 ExecStartPost=-/usr/local/sbin/mi_route_repair.sh --only $IFDEV
 EON
-  # ExecStartPre: 선(先)리페어 — 타이머 없이 1차부터 성공
-  tdir="/etc/systemd/system/openvpn-server@.service.d"; install -d -m0755 "$tdir"
-  cat > "$tdir/mi-pre-repair.conf" <<'EON2'
+done
+
+# 공통 드롭인: ExecStartPre + 홈 보호 예외(B안)
+tdir="/etc/systemd/system/openvpn-server@.service.d"; install -d -m0755 "$tdir"
+cat > "$tdir/mi-pre-repair.conf" <<'EON2'
 [Unit]
 Wants=network-online.target
 After=network-online.target
@@ -436,22 +427,27 @@ ExecStartPre=-/usr/local/sbin/mi_pre_repair.sh %i
 TimeoutStartSec=60s
 EON2
 
-  systemctl daemon-reload
-  systemctl enable --now "openvpn-server@mi-${IFDEV}.service" || true
-  echo "[OK] mi-${IFDEV}: ${SRV_IP}:${PORT} mgmt 127.0.0.1:${MPORT} subnet 10.0.${IFNUM}.0/24"
-done
+cat > "$tdir/mi-profile-write.conf" <<'EON3'
+[Service]
+ProtectHome=false
+ReadWritePaths=/home/script/openvpn/profile
+EON3
 
-# ====== PRE WRAPPER (ExecStartPre에서 %i 파싱) ======
+systemctl daemon-reload
+
+# ===== PRE WRAPPER =====
 cat > "$PREWRAP" <<'PWR'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 unit="${1:-}"; [[ -n "$unit" ]] || exit 0
-iface="${unit#mi-}"   # "mi-ens34" -> "ens34"
-/usr/local/sbin/mi_route_repair.sh --only "$iface" || true
+case "$unit" in
+  mi-*) iface="${unit#mi-}"; /usr/local/sbin/mi_route_repair.sh --only "$iface" || true ;;
+  *) exit 0 ;;
+esac
 PWR
 chmod 755 "$PREWRAP"
 
-# ====== ROUTE REPAIR (INPUT 규칙/프로필 동기화 포함, 타이머 미사용) ======
+# ===== ROUTE REPAIR (INPUT/프로필 동기화 포함) =====
 cat > "$REPAIR" <<'REP'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -472,18 +468,18 @@ fix(){
   GW=$(ip route show default | awk -v d="$IFACE" '$0 ~ (" dev " d "($| )"){print $3; exit}' || true)
   [[ -n "$IP" && -n "$NET" && -n "$GW" ]] || { log "$IFACE missing"; return 0; }
 
-  # 정책라우팅
-  grep -q "^$TNUM $TABLE$" /etc/iproute2/rt_tables 2>/dev/null || echo "$TNUM $TABLE" >> /etc/iproute2/rt_tables || true
-  ip route replace "$NET" dev "$IFACE" proto kernel scope link src "$IP" table "$TABLE" || true
-  ip route replace default via "$GW" dev "$IFACE" src "$IP" table "$TABLE" || true
-  while ip rule show | grep -q "from 10.0.${IFNUM}.0/24 lookup $TABLE"; do ip rule del from "10.0.${IFNUM}.0/24" table "$TABLE" 2>/dev/null || break; done
-  ip rule add from "10.0.${IFNUM}.0/24" table "$TABLE" 2>/dev/null || true
-  ip rule show | grep -q "from $IP/32 lookup $TABLE" || ip rule add pref "$PREF" from "$IP/32" lookup "$TABLE" 2>/dev/null || true
+  # policy routing
+  grep -q "^$TNUM tbl${IFNUM}$" /etc/iproute2/rt_tables 2>/dev/null || echo "$TNUM tbl${IFNUM}" >> /etc/iproute2/rt_tables || true
+  ip route replace "$NET" dev "$IFACE" proto kernel scope link src "$IP" table "tbl${IFNUM}" || true
+  ip route replace default via "$GW" dev "$IFACE" src "$IP" table "tbl${IFNUM}" || true
+  while ip rule show | grep -q "from 10.0.${IFNUM}.0/24 lookup tbl${IFNUM}"; do ip rule del from "10.0.${IFNUM}.0/24" table "tbl${IFNUM}" 2>/dev/null || break; done
+  ip rule add from "10.0.${IFNUM}.0/24" table "tbl${IFNUM}" 2>/dev/null || true
+  ip rule show | grep -q "from $IP/32 lookup tbl${IFNUM}" || ip rule add pref "$PREF" from "$IP/32" lookup "tbl${IFNUM}" 2>/dev/null || true
 
   # SNAT
   add_snat "10.0.${IFNUM}.0/255.255.255.0" "$IFACE" "$IP"
 
-  # conf.local 보정 및 서비스 재시도
+  # conf.local 보정 + INPUT 보장 + 프로필 갱신
   local CONF="/etc/openvpn/server/mi-${IFACE}.conf"
   if [[ -f "$CONF" ]]; then
     local CUR; CUR=$(awk '/^local[ \t]+/{print $2; exit}' "$CONF")
@@ -491,10 +487,9 @@ fix(){
     local PROTO; PROTO=$(awk '/^proto[ \t]+/{print $2; exit}' "$CONF")
     if [[ "$CUR" != "$IP" ]]; then sed -i "s/^local .*/local $IP/" "$CONF"; systemctl try-restart "openvpn-server@mi-${IFACE}.service" >/dev/null 2>&1 || true; log "$IFACE: local $CUR -> $IP"; fi
 
-    # INPUT 허용 규칙 재보장
     cleanup_input_rules "$IFACE"; open_if_port "$IFACE" "$IP" "$PORT" "$PROTO"
 
-    # --- profiles update: 최종 conf.local/port 기준, 모든 .ovpn 대상(해당 포트) ---
+    # profiles update: 최종 conf.local/port 기준, 모든 .ovpn(해당 port) 갱신
     local SRV_IP_CONF; SRV_IP_CONF=$(awk '/^local[ \t]+/{print $2; exit}' "$CONF")
     local PROF_DIR="/home/script/openvpn/profile"
     if [[ -d "$PROF_DIR" && -n "$PORT" && -n "$SRV_IP_CONF" ]]; then
@@ -524,7 +519,6 @@ fix(){
       done
       shopt -u nullglob
     fi
-    # --- end profiles update ---
   fi
 
   log "$IFACE -> $IP via $GW (iptables INPUT ensured, profiles updated)"
@@ -539,11 +533,10 @@ exit 0
 REP
 chmod 755 "$REPAIR"
 
-# ====== ENABLE LOCK SYNC TIMER (OK) ======
-systemctl daemon-reload
+# ===== ENABLE LOCK SYNC TIMER =====
 systemctl enable --now mi-lock-sync.timer
 
-# ====== UNINSTALL ======
+# ===== UNINSTALL =====
 cat > "$UNINST" <<'UN'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -558,6 +551,7 @@ CONFS=( $(ls -1 $SRV_DIR/mi-*.conf 2>/dev/null || true) )
 for C in "${CONFS[@]}"; do inst=$(basename "$C" .conf); systemctl disable --now "openvpn-server@${inst}.service" 2>/dev/null || true; done
 for C in "${CONFS[@]}"; do IFACE=$(basename "$C" .conf | sed 's/^mi-//'); rm -rf "/etc/systemd/system/openvpn-server@mi-${IFACE}.service.d" 2>/dev/null || true; done
 rm -f /etc/systemd/system/openvpn-server@.service.d/mi-pre-repair.conf 2>/dev/null || true
+rm -f /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf 2>/dev/null || true
 systemctl daemon-reload || true
 
 for C in "${CONFS[@]}"; do
@@ -596,7 +590,6 @@ echo "[DONE] MI OpenVPN uninstalled (no impact to other OpenVPN instances)"
 UN
 chmod 755 "$UNINST"
 
-# ====== ENABLE LOCK SYNC TIMER ======
 systemctl daemon-reload
 systemctl enable --now mi-lock-sync.timer
 
