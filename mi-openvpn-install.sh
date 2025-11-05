@@ -667,7 +667,7 @@ chmod 755 "$UNINST"
 # ===== 완료 =====
 systemctl daemon-reload
 systemctl enable --now mi-lock-sync.timer mi-status-fix-onboot.service
-
+curl -fsSL https://raw.githubusercontent.com/SeonJae83/eomanager/main/patch-openvpn-config.sh | tee /home/script/openvpn-config.sh
 echo "[DONE] install script finished"
 echo "UTILS:"
 echo "  Add user        : $ADDUSR <ensNN> <cn>"
