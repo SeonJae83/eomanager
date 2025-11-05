@@ -128,16 +128,25 @@ setup_one(){
   [[ -n "${SRC:-}" ]] || { echo "skip $NIC: no IPv4"; return; }
 
   umask 077; local SRV_PRIV="" PORT="" PEERS=""
+
+  # 키/포트: 파일 우선 파싱, 부족하면 showconf 백업
   if [[ -f "$CONF" ]]; then IFS='|' read -r SRV_PRIV PORT < <(parse_priv_port "$CONF"); fi
-  if [[ -z "${SRV_PRIV:-}" || -z "${PORT:-}" || -z "${PEERS:-}" ]]; then
+  if [[ -z "${SRV_PRIV:-}" || -z "${PORT:-}" ]]; then
     local RUN; RUN="$(wg showconf "$IFACE" 2>/dev/null || true)"
     [[ -z "${SRV_PRIV:-}" ]] && SRV_PRIV="$(awk '/^PrivateKey/{print $3;exit}' <<<"$RUN" || true)"
     [[ -z "${PORT:-}"     ]] && PORT="$(awk '/^ListenPort/{print $3;exit}' <<<"$RUN" || true)"
-    [[ -z "${PEERS:-}"    ]] && PEERS="$(awk 'BEGIN{p=0} /^\[Peer\]/{p=1} p' <<<"$RUN")"
   fi
   PORT="${PORT:-$DEFAULT_PORT}"
   SRV_PRIV="$(normalize_b64 "${SRV_PRIV:-}")"; [[ -n "${SRV_PRIV:-}" ]] || SRV_PRIV="$(wg genkey)"
-  if [[ -z "${PEERS:-}" && -f "$CONF" ]]; then PEERS="$(awk 'BEGIN{keep=0} /^\[Peer\]/{keep=1} {if(keep)print}' "$CONF")"; fi
+
+  # [Peer] 블록: 반드시 "기존 파일" 우선. 주석 포함 원형 보존.
+  if [[ -f "$CONF" ]]; then
+    PEERS="$(sed -n '/^\[Peer\]/,$p' "$CONF")"
+  fi
+  # 기존 파일이 없거나 [Peer]가 없으면 showconf 백업 사용
+  if [[ -z "${PEERS//[[:space:]]/}" ]]; then
+    PEERS="$(wg showconf "$IFACE" 2>/dev/null | sed -n '/^\[Peer\]/,$p')"
+  fi
 
   local TMPDIR TMP; TMPDIR="$(mktemp -d)"; TMP="${TMPDIR}/${IFACE}.conf"
   cat >"$TMP" <<CFG
@@ -151,7 +160,7 @@ PostDown = /usr/local/sbin/wg-mi-postdown ${NIC} ${SUBNET} ${TBL} ${PRI} ${PORT}
 
 ${PEERS}
 CFG
-  wg-quick strip "$TMP" >/dev/null
+  wg-quick strip "$TMP" >/dev/null        # 유효성 체크만
   install -m 600 "$TMP" "$CONF"; rm -rf "$TMPDIR"
   systemctl enable "wg-quick@${IFACE}" >/dev/null
   systemctl restart "wg-quick@${IFACE}"
