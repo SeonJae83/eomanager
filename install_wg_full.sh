@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install_wg_full.sh — multi-IF WireGuard FULL
+# install_wg_full.sh ? multi-IF WireGuard FULL
 # - ensNN 자동 구성 + per-IF policy routing + SNAT + FwMark
 # - add/del/list/find/ed(차단·복구) 유틸 포함
 # - wg-reinit.service 부팅 자동 재적용, network-online 이후
@@ -90,7 +90,7 @@ ip rule del fwmark "$FWMARK_HEX" lookup "$TBL" priority "$((PRI-1))" 2>/dev/null
 EOF
 chmod 755 "$BIN/wg-mi-postdown"
 
-# ===== setup_wg_iface.sh — ensNN 자동(기존 키/피어 보존) =====
+# ===== setup_wg_iface.sh ? ensNN 자동(기존 키/피어 보존 + Name 주석 보존) =====
 cat >"$BIN/setup_wg_iface.sh" <<"EOF"
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -139,13 +139,11 @@ setup_one(){
   PORT="${PORT:-$DEFAULT_PORT}"
   SRV_PRIV="$(normalize_b64 "${SRV_PRIV:-}")"; [[ -n "${SRV_PRIV:-}" ]] || SRV_PRIV="$(wg genkey)"
 
-  # [Peer] 블록: 반드시 "기존 파일" 우선. 주석 포함 원형 보존.
+  # [Peer] 블록: 우선 showconf(기존 동작 유지) → 그 다음 "파일에 [Peer]가 있으면 그 원문으로 최종 덮어쓰기"로 Name 주석 보존
+  PEERS="$( { wg showconf "$IFACE" 2>/dev/null || true; } | sed -n '/^\[Peer\]/,$p')"
   if [[ -f "$CONF" ]]; then
-    PEERS="$(sed -n '/^\[Peer\]/,$p' "$CONF")"
-  fi
-  # 기존 파일이 없거나 [Peer]가 없으면 showconf 백업 사용
-  if [[ -z "${PEERS//[[:space:]]/}" ]]; then
-    PEERS="$(wg showconf "$IFACE" 2>/dev/null | sed -n '/^\[Peer\]/,$p')"
+    FP="$(sed -n '/^\[Peer\]/,$p' "$CONF")"
+    [[ -n "${FP//[[:space:]]/}" ]] && PEERS="$FP"
   fi
 
   local TMPDIR TMP; TMPDIR="$(mktemp -d)"; TMP="${TMPDIR}/${IFACE}.conf"
@@ -345,7 +343,7 @@ fi
 EOF
 chmod 755 "$BIN/wg-list-users.sh"
 
-# ===== find-user (네임스페이스화) =====
+# ===== find-user =====
 cat >"$BIN/wg-find-user.sh" <<"EOF"
 #!/usr/bin/env bash
 # usage: wg-find-user.sh <wg-ensNN> <username> [THRESHOLD_SEC]
@@ -393,7 +391,7 @@ wg_find_main "$@"
 EOF
 chmod 755 "$BIN/wg-find-user.sh"
 
-# ===== ed-user (enable/disable, Name 불변, 주석에 원키 저장) =====
+# ===== ed-user (enable/disable) =====
 cat >"$BIN/wg-ed-user.sh" <<"EOF"
 #!/usr/bin/env bash
 # wg-ed-user.sh <wg-ensNN> <username> <enable|disable>
