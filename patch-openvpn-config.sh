@@ -2,7 +2,7 @@
 # ===========================================
 #  OpenVPN per-interface 자동 설정 스크립트
 #  Author : SeonJae Lee
-#  Updated: 2025-11-04
+#  Updated: 2025-11-05
 # ===========================================
 
 set -Eeuo pipefail
@@ -33,7 +33,7 @@ fi
 
 # ---- openvpn-iptables.service 헤더 작성 ----
 systemctl stop openvpn-iptables.service 2>/dev/null || true
-cat >/etc/systemd/system/openvpn-iptables.service <<'HEAD'
+cat >/etc/systemd/system/openvpn-iptables.service <<HEAD
 [Unit]
 Before=network.target
 
@@ -41,14 +41,14 @@ Before=network.target
 Type=oneshot
 RemainAfterExit=yes
 # 관리 포트 허용 예시
-ExecStart=/sbin/iptables -I INPUT -s 59.14.186.184 -p icmp --icmp-type echo-request -j ACCEPT
-ExecStop=/sbin/iptables  -D INPUT -s 59.14.186.184 -p icmp --icmp-type echo-request -j ACCEPT
-ExecStart=/sbin/iptables -I INPUT -s 59.14.186.184 -p tcp --dport 5555 -j ACCEPT
-ExecStop=/sbin/iptables  -D INPUT -s 59.14.186.184 -p tcp --dport 5555 -j ACCEPT
-ExecStart=/sbin/iptables -I INPUT -s 192.168.0.0/24 -p tcp --dport 5555 -j ACCEPT
-ExecStop=/sbin/iptables  -D INPUT -s 192.168.0.0/24 -p tcp --dport 5555 -j ACCEPT
-ExecStart=/sbin/iptables -A INPUT -p tcp --dport 5555 -j DROP
-ExecStop=/sbin/iptables  -D INPUT -p tcp --dport 5555 -j DROP
+ExecStart=$(command -v iptables) -I INPUT -s 59.14.186.184 -p icmp --icmp-type echo-request -j ACCEPT
+ExecStop=$(command -v iptables)  -D INPUT -s 59.14.186.184 -p icmp --icmp-type echo-request -j ACCEPT
+ExecStart=$(command -v iptables) -I INPUT -s 59.14.186.184 -p tcp --dport 5555 -j ACCEPT
+ExecStop=$(command -v iptables)  -D INPUT -s 59.14.186.184 -p tcp --dport 5555 -j ACCEPT
+ExecStart=$(command -v iptables) -I INPUT -s 192.168.0.0/24 -p tcp --dport 5555 -j ACCEPT
+ExecStop=$(command -v iptables)  -D INPUT -s 192.168.0.0/24 -p tcp --dport 5555 -j ACCEPT
+ExecStart=$(command -v iptables) -A INPUT -p tcp --dport 5555 -j DROP
+ExecStop=$(command -v iptables)  -D INPUT -p tcp --dport 5555 -j DROP
 HEAD
 
 # ---- ensNN 인터페이스별 설정 ----
@@ -91,23 +91,43 @@ management ${ipaddr} 5555
 EOF
 
   cat >>/etc/systemd/system/openvpn-iptables.service <<EOF
-ExecStart=/sbin/iptables -t nat -A POSTROUTING -s 10.${i}.0.0/24 ! -d 10.${i}.0.0/24 -j SNAT --to ${ipaddr}
-ExecStart=/sbin/iptables -I INPUT -p udp --dport 11${i} -j ACCEPT
-ExecStart=/sbin/iptables -I FORWARD -s 10.${i}.0.0/24 -j ACCEPT
-ExecStop=/sbin/iptables  -t nat -D POSTROUTING -s 10.${i}.0.0/24 ! -d 10.${i}.0.0/24 -j SNAT --to ${ipaddr}
-ExecStop=/sbin/iptables  -D INPUT -p udp --dport 11${i} -j ACCEPT
-ExecStop=/sbin/iptables  -D FORWARD -s 10.${i}.0.0/24 -j ACCEPT
+ExecStart=$(command -v iptables) -t nat -A POSTROUTING -s 10.${i}.0.0/24 ! -d 10.${i}.0.0/24 -j SNAT --to ${ipaddr}
+ExecStart=$(command -v iptables) -I INPUT -p udp --dport 11${i} -j ACCEPT
+ExecStart=$(command -v iptables) -I FORWARD -s 10.${i}.0.0/24 -j ACCEPT
+ExecStop=$(command -v iptables)  -t nat -D POSTROUTING -s 10.${i}.0.0/24 ! -d 10.${i}.0.0/24 -j SNAT --to ${ipaddr}
+ExecStop=$(command -v iptables)  -D INPUT -p udp --dport 11${i} -j ACCEPT
+ExecStop=$(command -v iptables)  -D FORWARD -s 10.${i}.0.0/24 -j ACCEPT
 EOF
 done
 
 # ---- 공통 FORWARD 규칙 ----
-cat >>/etc/systemd/system/openvpn-iptables.service <<'TAIL'
-ExecStart=/sbin/iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ExecStop=/sbin/iptables  -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+cat >>/etc/systemd/system/openvpn-iptables.service <<TAIL
+ExecStart=$(command -v iptables) -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+ExecStop=$(command -v iptables)  -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
 
 [Install]
 WantedBy=multi-user.target
 TAIL
 
 systemctl daemon-reload || true
+systemctl start openvpn-iptables
 echo "[OK] generation complete."
+
+# === network-online 보장 후 서비스 시작 ===
+# 네트워크가 완전히 올라올 때까지 대기
+until systemctl is-active --quiet network-online.target; do
+  sleep 1
+done
+
+# 유닛 리로드
+systemctl daemon-reload || true
+
+# iptables 유닛 활성화+즉시 적용
+systemctl enable --now openvpn-iptables.service || true
+
+# 생성된 conf 기준으로 OpenVPN 인스턴스 활성화+즉시 시작
+for conf in /etc/openvpn/server/server11*.conf; do
+  [[ -f "$conf" ]] || continue
+  svc="$(basename "$conf" .conf)"              # e.g. server1133
+  systemctl enable --now "openvpn-server@${svc}.service" || true
+done
