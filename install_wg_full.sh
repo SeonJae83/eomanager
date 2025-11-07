@@ -244,6 +244,7 @@ cat > "$WG_ADD_USER_CONF" <<EOC
 PrivateKey = ${WG_ADD_CLT_PRIV}
 Address = ${WG_ADD_CLT_IP}/32
 DNS = 168.126.63.1
+MTU = 1380
 
 [Peer]
 PublicKey = ${WG_ADD_SRV_PUB}
