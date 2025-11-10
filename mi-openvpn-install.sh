@@ -65,8 +65,16 @@ open_if_port(){ # INPUT 허용
   iptables -C INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "$TAG" 2>/dev/null \
     || iptables -I INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "$TAG"
 }
-cleanup_input_rules(){ local IFACE="$1"; while read -r line; do eval iptables "${line/-A /-D }" 2>/dev/null || true; done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true); }
-ensure_nat_chain(){ iptables -t nat -N MI-OVPN 2>/dev/null || true; iptables -t nat -C POSTROUTING -j MI-OVPN 2>/dev/null || iptables -t nat -I POSTROUTING -j MI-OVPN; }
+cleanup_input_rules(){
+  local IFACE="$1"
+  while read -r line; do
+    eval iptables "${line/-A /-D }" 2>/dev/null || true
+  done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true)
+}
+ensure_nat_chain(){
+  iptables -t nat -N MI-OVPN 2>/dev/null || true
+  iptables -t nat -C POSTROUTING -j MI-OVPN 2>/dev/null || iptables -t nat -I POSTROUTING -j MI-OVPN
+}
 add_snat_rule(){ # per-IF SNAT
   local SUB="${1:-}" IFACE_P="${2:-}" SRCIP="${3:-}"
   [[ -n "$SUB" && -n "$IFACE_P" && -n "$SRCIP" ]] || return 0
@@ -112,7 +120,16 @@ mapfile -t EP_NOW < <(awk -F'[,\t ]+' -v cn="$CN" '$1=="CLIENT_LIST"&&$2==cn{pri
 
 # 락 정리
 install -d -m0755 -o nobody -g nogroup "$BASE/$IFACE/$CN"
-prune_stale(){ local d="$1"; shift; local -A alive=(); for ep in "$@"; do alive["$ep"]=1; done; shopt -s nullglob; for lf in "$d"/*.lock; do ep="$(basename "$lf" .lock)"; [[ -n "${alive[$ep]:-}" ]] || rm -f "$lf"; done; }
+prune_stale(){
+  local d="$1"; shift
+  local -A alive=()
+  for ep in "$@"; do alive["$ep"]=1; done
+  shopt -s nullglob
+  for lf in "$d"/*.lock; do
+    ep="$(basename "$lf" .lock)"
+    [[ -n "${alive[$ep]:-}" ]] || rm -f "$lf"
+  done
+}
 prune_stale "$BASE/$IFACE/$CN" "${EP_NOW[@]}"
 
 case "${script_type:-client-connect}" in
@@ -125,7 +142,8 @@ case "${script_type:-client-connect}" in
     ;;
   client-disconnect)
     rm -f "$BASE/$IFACE/$CN/$TOKEN.lock" 2>/dev/null || true
-    prune_stale "$BASE/$IFACE/$CN" "${EP_NOW[@]}"; rmdir "$BASE/$IFACE/$CN" 2>/dev/null || true
+    prune_stale "$BASE/$IFACE/$CN" "${EP_NOW[@]}"
+    rmdir "$BASE/$IFACE/$CN" 2>/dev/null || true
     ;;
 esac
 exit 0
@@ -309,9 +327,24 @@ done
 awk -v cn="$CN" -v TH="$TH" '
 BEGIN{ FS = "[\t ]+"; now=0; lastref=-1 }
 $1=="TIME" { if ($NF ~ /^[0-9]+$/) now=$NF+0; next }
-$1=="ROUTING_TABLE" { gsub(/^[ \t]+|[ \t]+$/, "", $3); if ($3==cn && $NF ~ /^[0-9]+$/) { lr=$NF+0; if (lr>lastref) lastref=lr } next }
-$1=="CLIENT_LIST" { gsub(/^[ \t]+|[ \t]+$/, "", $2); if ($2==cn) { for(i=NF;i>=1;i--) if ($i ~ /^[0-9]+$/) { lr=$i+0; break } if (lr>0 && lr>lastref) lastref=lr } next }
-END{ if (now==0 || lastref<0) { print "False (no-data)"; exit } age=now-lastref; if (age<=TH) printf "True (%ds)\n", age; else printf "False (%ds)\n", age }' "$LOG"
+$1=="ROUTING_TABLE" {
+  gsub(/^[ \t]+|[ \t]+$/, "", $3);
+  if ($3==cn && $NF ~ /^[0-9]+$/) { lr=$NF+0; if (lr>lastref) lastref=lr }
+  next
+}
+$1=="CLIENT_LIST" {
+  gsub(/^[ \t]+|[ \t]+$/, "", $2);
+  if ($2==cn) {
+    for(i=NF;i>=1;i--) if ($i ~ /^[0-9]+$/) { lr=$i+0; break }
+    if (lr>0 && lr>lastref) lastref=lr
+  }
+  next
+}
+END{
+  if (now==0 || lastref<0) { print "False (no-data)"; exit }
+  age=now-lastref;
+  if (age<=TH) printf "True (%ds)\n", age; else printf "False (%ds)\n", age
+}' "$LOG"
 FIND
 chmod 755 "$FINDUSR"
 
@@ -332,15 +365,19 @@ get_pub_ifaces(){
     ip route show default dev "$nic" >/dev/null 2>&1 && echo "$nic"
   done
 }
-if [[ -n "$IFACES_INPUT" ]]; then mapfile -t IFACES < <(echo "$IFACES_INPUT" | tr ',' ' ' | xargs -n1)
-else mapfile -t IFACES < <(get_pub_ifaces)
+if [[ -n "$IFACES_INPUT" ]]; then
+  mapfile -t IFACES < <(echo "$IFACES_INPUT" | tr ',' ' ' | xargs -n1)
+else
+  mapfile -t IFACES < <(get_pub_ifaces)
 fi
 [[ ${#IFACES[@]} -gt 0 ]] || { echo "[ERR] no iface"; exit 1; }
 apply_iface_sysctl "${IFACES[@]}"
 
 # ===== PKI INIT =====
 if [[ ! -d "$EASYRSA_DIR" ]]; then
-  cp -r /usr/share/easy-rsa "$EASYRSA_DIR"; chmod 755 "$EASYRSA_DIR"; cd "$EASYRSA_DIR"
+  cp -r /usr/share/easy-rsa "$EASYRSA_DIR"
+  chmod 755 "$EASYRSA_DIR"
+  cd "$EASYRSA_DIR"
   cat >"$EASYRSA_DIR/vars" <<'VARS'
 set_var EASYRSA_REQ_COUNTRY "KR"
 set_var EASYRSA_REQ_PROVINCE "Seoul"
@@ -441,7 +478,9 @@ EOF
   grep -q "^$TNUM $TABLE$" /etc/iproute2/rt_tables 2>/dev/null || echo "$TNUM $TABLE" >> /etc/iproute2/rt_tables
   ip route replace "$NET" dev "$IFDEV" proto kernel scope link src "$SRV_IP" table "$TABLE" || true
   ip route replace default via "$GW" dev "$IFDEV" src "$SRV_IP" table "$TABLE" || true
-  while ip rule show | grep -q "from 10.0.${IFNUM}.0/24 lookup $TABLE"; do ip rule del from "10.0.${IFNUM}.0/24" table "$TABLE" 2>/dev/null || break; done
+  while ip rule show | grep -q "from 10.0.${IFNUM}.0/24 lookup $TABLE"; do
+    ip rule del from "10.0.${IFNUM}.0/24" table "$TABLE" 2>/dev/null || break
+  done
   ip rule add from "10.0.${IFNUM}.0/24" table "$TABLE" 2>/dev/null || true
   ip rule show | grep -q "from $SRV_IP/32 lookup $TABLE" || ip rule add pref "$PREF" from "$SRV_IP/32" lookup "$TABLE" 2>/dev/null || true
 
@@ -449,7 +488,8 @@ EOF
   open_if_port "$IFDEV" "$SRV_IP" "$PORT" udp
 
   # per-instance ExecStartPost: route/profiles repair
-  instdir="/etc/systemd/system/openvpn-server@mi-${IFDEV}.service.d"; install -d -m0755 "$instdir"
+  instdir="/etc/systemd/system/openvpn-server@mi-${IFDEV}.service.d"
+  install -d -m0755 "$instdir"
   cat > "$instdir/mi-route.conf" <<EON
 [Service]
 ExecStartPost=-/usr/local/sbin/mi_route_repair.sh --only $IFDEV
@@ -462,6 +502,13 @@ done
 
 # ===== TEMPLATE DROP-INS =====
 install -d -m0755 /etc/systemd/system/openvpn-server@.service.d
+
+# 프로세스 수 제한 완화 (기본 LimitNPROC=10 -> 256)
+tee /etc/systemd/system/openvpn-server@.service.d/99-limits.conf >/dev/null <<'EOLIM'
+[Service]
+LimitNPROC=256
+EOLIM
+
 tee /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf >/dev/null <<'EONP'
 [Service]
 ProtectHome=false
@@ -490,11 +537,36 @@ cat > "$REPAIR" <<'REP'
 set -Eeuo pipefail
 only=""; [[ "${1:-}" == "--only" && -n "${2:-}" ]] && only="$2"
 log(){ echo "[repair] $*"; }
-wait_if(){ local ifc="$1" n=60; while ((n-- > 0)); do ip -4 addr show dev "$ifc" | grep -q 'inet ' && return 0; sleep 1; done; return 1; }
-ensure_nat(){ iptables -t nat -N MI-OVPN 2>/dev/null || true; iptables -t nat -C POSTROUTING -j MI-OVPN 2>/dev/null || iptables -t nat -I POSTROUTING -j MI-OVPN || true; }
-add_snat(){ local SUB="$1" IFACE_P="$2" SRC="$3"; ensure_nat; iptables -t nat -C MI-OVPN -s "$SUB" -o "$IFACE_P" -j SNAT --to-source "$SRC" -m comment --comment "mi-$IFACE_P" 2>/dev/null || iptables -t nat -A MI-OVPN -s "$SUB" -o "$IFACE_P" -j SNAT --to-source "$SRC" -m comment --comment "mi-$IFACE_P" || true; }
-cleanup_input_rules(){ local IFACE="$1"; while read -r line; do eval iptables "${line/-A /-D }" 2>/dev/null || true; done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true); }
-open_if_port(){ local IFACE_P="${1:-}" IP="${2:-}" PORT="${3:-}" PROTO="${4:-udp}"; [[ -n "$IFACE_P" && -n "$IP" && -n "$PORT" ]] || return 0; iptables -C INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "mi-$IFACE_P" 2>/dev/null || iptables -I INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "mi-$IFACE_P"; }
+wait_if(){
+  local ifc="$1" n=60
+  while ((n-- > 0)); do
+    ip -4 addr show dev "$ifc" | grep -q 'inet ' && return 0
+    sleep 1
+  done
+  return 1
+}
+ensure_nat(){
+  iptables -t nat -N MI-OVPN 2>/dev/null || true
+  iptables -t nat -C POSTROUTING -j MI-OVPN 2>/dev/null || iptables -t nat -I POSTROUTING -j MI-OVPN || true
+}
+add_snat(){
+  local SUB="$1" IFACE_P="$2" SRC="$3"
+  ensure_nat
+  iptables -t nat -C MI-OVPN -s "$SUB" -o "$IFACE_P" -j SNAT --to-source "$SRC" -m comment --comment "mi-$IFACE_P" 2>/dev/null \
+    || iptables -t nat -A MI-OVPN -s "$SUB" -o "$IFACE_P" -j SNAT --to-source "$SRC" -m comment --comment "mi-$IFACE_P" || true
+}
+cleanup_input_rules(){
+  local IFACE="$1"
+  while read -r line; do
+    eval iptables "${line/-A /-D }" 2>/dev/null || true
+  done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true)
+}
+open_if_port(){
+  local IFACE_P="${1:-}" IP="${2:-}" PORT="${3:-}" PROTO="${4:-udp}"
+  [[ -n "$IFACE_P" && -n "$IP" && -n "$PORT" ]] || return 0
+  iptables -C INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "mi-$IFACE_P" 2>/dev/null \
+    || iptables -I INPUT -p "$PROTO" -d "$IP" --dport "$PORT" -j ACCEPT -m comment --comment "mi-$IFACE_P"
+}
 
 update_profiles(){ # *__<IFACE>.ovpn + 같은 PORT 쓰는 파일들 교체, 없으면 append
   local IFACE="$1" SRV_IP="$2" PORT="$3" PROF_DIR="/home/script/openvpn/profile"
@@ -529,7 +601,9 @@ update_profiles(){ # *__<IFACE>.ovpn + 같은 PORT 쓰는 파일들 교체, 없�
 }
 
 fix(){
-  local IFACE="$1" IFNUM; IFNUM=$(sed -n 's/[^0-9]*\([0-9]\+\).*/\1/p' <<<"$IFACE" || true); [[ -n "$IFNUM" ]] || return 0
+  local IFACE="$1" IFNUM
+  IFNUM=$(sed -n 's/[^0-9]*\([0-9]\+\).*/\1/p' <<<"$IFACE" || true)
+  [[ -n "$IFNUM" ]] || return 0
   wait_if "$IFACE" || { log "$IFACE not ready"; return 0; }
   local IP NET GW TABLE="tbl${IFNUM}" TNUM=$((100+IFNUM)) PREF=$((10000+IFNUM))
   IP=$(ip -4 addr show dev "$IFACE" | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1 || true)
@@ -540,7 +614,9 @@ fix(){
   grep -q "^$TNUM tbl${IFNUM}$" /etc/iproute2/rt_tables 2>/dev/null || echo "$TNUM tbl${IFNUM}" >> /etc/iproute2/rt_tables || true
   ip route replace "$NET" dev "$IFACE" proto kernel scope link src "$IP" table "tbl${IFNUM}" || true
   ip route replace default via "$GW" dev "$IFACE" src "$IP" table "tbl${IFNUM}" || true
-  while ip rule show | grep -q "from 10.0.${IFNUM}.0/24 lookup tbl${IFNUM}"; do ip rule del from "10.0.${IFNUM}.0/24" table "tbl${IFNUM}" 2>/dev/null || break; done
+  while ip rule show | grep -q "from 10.0.${IFNUM}.0/24 lookup tbl${IFNUM}"; do
+    ip rule del from "10.0.${IFNUM}.0/24" table "tbl${IFNUM}" 2>/dev/null || break
+  done
   ip rule add from "10.0.${IFNUM}.0/24" table "tbl${IFNUM}" 2>/dev/null || true
   ip rule show | grep -q "from $IP/32 lookup tbl${IFNUM}" || ip rule add pref "$PREF" from "$IP/32" lookup "tbl${IFNUM}" 2>/dev/null || true
 
@@ -557,7 +633,8 @@ fix(){
       systemctl try-restart "openvpn-server@mi-${IFACE}.service" >/dev/null 2>&1 || true
       log "$IFACE: local $CUR -> $IP"
     fi
-    cleanup_input_rules "$IFACE"; open_if_port "$IFACE" "$IP" "$PORT" "$PROTO"
+    cleanup_input_rules "$IFACE"
+    open_if_port "$IFACE" "$IP" "$PORT" "$PROTO"
     update_profiles "$IFACE" "$IP" "$PORT"
   fi
   log "$IFACE -> $IP via $GW (profiles synced)"
@@ -624,14 +701,29 @@ systemctl disable --now mi-status-fix-onboot.service 2>/dev/null || true
 rm -f /usr/local/sbin/mi_status_fix_once.sh /etc/systemd/system/mi-status-fix-onboot.service 2>/dev/null || true
 
 CONFS=( $(ls -1 $SRV_DIR/mi-*.conf 2>/dev/null || true) )
-for C in "${CONFS[@]}"; do inst=$(basename "$C" .conf); systemctl disable --now "openvpn-server@${inst}.service" 2>/dev/null || true; done
-for C in "${CONFS[@]}"; do IFACE=$(basename "$C" .conf | sed 's/^mi-//'); rm -rf "/etc/systemd/system/openvpn-server@mi-${IFACE}.service.d" 2>/dev/null || true; done
-rm -f /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf /etc/systemd/system/openvpn-server@.service.d/mi-perms.conf 2>/dev/null || true
+
+for C in "${CONFS[@]}"; do
+  inst=$(basename "$C" .conf)
+  systemctl disable --now "openvpn-server@${inst}.service" 2>/dev/null || true
+done
+
+for C in "${CONFS[@]}"; do
+  IFACE=$(basename "$C" .conf | sed 's/^mi-//')
+  rm -rf "/etc/systemd/system/openvpn-server@mi-${IFACE}.service.d" 2>/dev/null || true
+done
+
+rm -f /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf \
+      /etc/systemd/system/openvpn-server@.service.d/mi-perms.conf \
+      /etc/systemd/system/openvpn-server@.service.d/99-limits.conf 2>/dev/null || true
+
 systemctl daemon-reload || true
 
 for C in "${CONFS[@]}"; do
-  IP=$(awk '/^local /{print $2}' "$C"); IFACE=$(basename "$C" .conf | sed 's/^mi-//')
-  while read -r line; do eval iptables "${line/-A /-D }" 2>/dev/null || true; done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true)
+  IP=$(awk '/^local /{print $2}' "$C")
+  IFACE=$(basename "$C" .conf | sed 's/^mi-//')
+  while read -r line; do
+    eval iptables "${line/-A /-D }" 2>/dev/null || true
+  done < <(iptables -S INPUT | grep -F -- "-m comment --comment mi-${IFACE}" || true)
   if iptables -t nat -S MI-OVPN >/dev/null 2>&1; then
     SUBNET="10.0.$(sed -n 's/[^0-9]*\([0-9]\+\).*/\1/p' <<<"$IFACE").0/24"
     while iptables -t nat -C MI-OVPN -s "$SUBNET" -o "$IFACE" -m comment --comment "mi-$IFACE" -j SNAT 2>/dev/null; do
@@ -639,6 +731,7 @@ for C in "${CONFS[@]}"; do
     done
   fi
 done
+
 if iptables -t nat -S MI-OVPN >/dev/null 2>&1; then
   if ! iptables -t nat -S MI-OVPN | grep -q ' -A MI-OVPN '; then
     iptables -t nat -D POSTROUTING -j MI-OVPN 2>/dev/null || true
@@ -647,9 +740,12 @@ if iptables -t nat -S MI-OVPN >/dev/null 2>&1; then
 fi
 
 for C in "${CONFS[@]}"; do
-  IFACE=$(basename "$C" .conf | sed 's/^mi-//'); IFNUM=$(sed -n 's/[^0-9]*\([0-9]\+\).*/\1/p' <<<"$IFACE")
+  IFACE=$(basename "$C" .conf | sed 's/^mi-//')
+  IFNUM=$(sed -n 's/[^0-9]*\([0-9]\+\).*/\1/p' <<<"$IFACE")
   SUBNET="10.0.${IFNUM}.0/24"; TABLE="tbl${IFNUM}"; TNUM=$((100+IFNUM)); PREF=$((10000+IFNUM))
-  while ip rule show | grep -q "from $SUBNET lookup $TABLE"; do ip rule del from "$SUBNET" table "$TABLE" 2>/dev/null || break; done
+  while ip rule show | grep -q "from $SUBNET lookup $TABLE"; do
+    ip rule del from "$SUBNET" table "$TABLE" 2>/dev/null || break
+  done
   IP=$(ip -4 addr show dev "$IFACE" | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1 || true)
   [[ -n "$IP" ]] && ip rule del pref "$PREF" from "$IP/32" lookup "$TABLE" 2>/dev/null || true
   ip route flush table "$TABLE" 2>/dev/null || true
@@ -657,8 +753,10 @@ for C in "${CONFS[@]}"; do
 done
 
 rm -rf "$SRV_DIR"/mi-*.conf "$ACL_DIR" "$PROF_DIR" "$EASYRSA_DIR" 2>/dev/null || true
-rm -f  "$OVPN_DIR/mi-crl.pem" "$OVPN_DIR/mi-tc.key" /etc/openvpn/hooks-limit2.sh /etc/sysctl.d/99-mi-openvpn-ifaces.conf /etc/tmpfiles.d/openvpn-mi.conf 2>/dev/null || true
-rm -f  /usr/local/sbin/mi_lock_sync.sh /etc/systemd/system/mi-lock-sync.service /etc/systemd/system/mi-lock-sync.timer 2>/dev/null || true
+rm -f  "$OVPN_DIR/mi-crl.pem" "$OVPN_DIR/mi-tc.key" /etc/openvpn/hooks-limit2.sh \
+       /etc/sysctl.d/99-mi-openvpn-ifaces.conf /etc/tmpfiles.d/openvpn-mi.conf 2>/dev/null || true
+rm -f  /usr/local/sbin/mi_lock_sync.sh /etc/systemd/system/mi-lock-sync.service \
+       /etc/systemd/system/mi-lock-sync.timer 2>/dev/null || true
 sysctl --system >/dev/null 2>&1 || true
 echo "[DONE] MI OpenVPN uninstalled (no impact to other OpenVPN instances)"
 UN
