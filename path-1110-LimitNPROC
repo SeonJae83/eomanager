@@ -1,0 +1,8 @@
+#!/bin/bash
+cat >/etc/systemd/system/openvpn-server@.service.d/99-limits.conf <<'EOF'
+[Service]
+LimitNPROC=256
+EOF
+
+systemctl daemon-reload
+systemctl restart 'openvpn-server@mi-*'
