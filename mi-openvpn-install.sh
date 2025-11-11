@@ -361,7 +361,11 @@ apply_iface_sysctl(){
 # ===== IFACE DISCOVERY =====
 get_pub_ifaces(){
   ip -o -4 addr show up scope global | awk '{print $2}' | while read -r nic; do
-    [[ "$nic" == "lo" ]] && continue
+    case "$nic" in
+      lo)        continue ;;   # loopback 제외
+      tun* )     continue ;;   # tun0, tun-mi-ensXX 등 제외
+      wg-* )     continue ;;   # wg-ensXX 등 wireguard 제외
+    esac
     ip route show default dev "$nic" >/dev/null 2>&1 && echo "$nic"
   done
 }
