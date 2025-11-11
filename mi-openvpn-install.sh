@@ -42,6 +42,10 @@ unset IFACE 2>/dev/null || true
 
 install -d -m0755 "$SRV_DIR" "$PROF_DIR" /usr/local/sbin "$ACL_DIR" "$RUN_DIR" "$LOCK_BASE"
 chown nobody:nogroup "$RUN_DIR" "$LOCK_BASE" || true
+# 락 트리 전체 권한 보정 (예전에 root로 만든 ensXX 디렉토리까지 정리)
+chown -R nobody:nogroup "$LOCK_BASE" 2>/dev/null || true
+chmod -R u+rwX,g+rwX "$LOCK_BASE" 2>/dev/null || true
+
 tee /etc/tmpfiles.d/openvpn-mi.conf >/dev/null <<EOF
 d $RUN_DIR 0755 nobody nogroup -
 d $LOCK_BASE 0755 nobody nogroup -
@@ -96,6 +100,8 @@ IP="${trusted_ip:-${untrusted_ip:-X}}"
 PORT="${trusted_port:-${untrusted_port:-Y}}"
 TOKEN="${IP}:${PORT}"
 
+log(){ echo "[HOOK][$IFACE][$CN] $*" >&2; }
+
 # IFACE 식별
 IFACE="${IFACE:-UNDEF}"
 if [[ "$IFACE" == "UNDEF" && -n "${STATUS_FILE:-}" ]]; then
@@ -105,8 +111,12 @@ fi
 # ALLOW/DENY
 DENY_F="$ACL_DIR/deny-${IFACE}.list"
 ALLOW_F="$ACL_DIR/allow-${IFACE}.list"
-if [[ -f "$ALLOW_F" ]] && ! grep -Fxq "$CN" "$ALLOW_F" 2>/dev/null; then exit 1; fi
-if [[ -f "$DENY_F" ]] &&  grep -Fxq "$CN" "$DENY_F" 2>/dev/null;  then exit 1; fi
+if [[ -f "$ALLOW_F" ]] && ! grep -Fxq "$CN" "$ALLOW_F" 2>/dev/null; then
+  log "DENY by allow-list (not allowed)"; exit 1
+fi
+if [[ -f "$DENY_F" ]] &&  grep -Fxq "$CN" "$DENY_F" 2>/dev/null; then
+  log "DENY by deny-list"; exit 1
+fi
 
 # CN 동시접속 한도: 인터페이스별
 LIM_F="$ACL_DIR/limit-${IFACE}.list"
@@ -118,8 +128,10 @@ fi
 # 현재 연결 엔드포인트
 mapfile -t EP_NOW < <(awk -F'[,\t ]+' -v cn="$CN" '$1=="CLIENT_LIST"&&$2==cn{print $3}' "$STATUS_FILE" 2>/dev/null)
 
-# 락 정리
-install -d -m0755 -o nobody -g nogroup "$BASE/$IFACE/$CN"
+# 베이스/디렉토리 보장 (실패해도 세션은 살림)
+mkdir -p "$BASE" 2>/dev/null || log "WARN: cannot mkdir $BASE"
+mkdir -p "$BASE/$IFACE/$CN" 2>/dev/null || log "WARN: cannot mkdir $BASE/$IFACE/$CN"
+
 prune_stale(){
   local d="$1"; shift
   local -A alive=()
@@ -130,6 +142,7 @@ prune_stale(){
     [[ -n "${alive[$ep]:-}" ]] || rm -f "$lf"
   done
 }
+
 prune_stale "$BASE/$IFACE/$CN" "${EP_NOW[@]}"
 
 case "${script_type:-client-connect}" in
@@ -137,15 +150,23 @@ case "${script_type:-client-connect}" in
     sc=${#EP_NOW[@]}
     lc=$(find "$BASE/$IFACE/$CN" -type f -name '*.lock' 2>/dev/null | wc -l | tr -d ' ')
     c=$(( sc>lc ? sc : lc ))
-    (( c >= MAX )) && exit 1
-    install -o nobody -g nogroup -m0644 /dev/null "$BASE/$IFACE/$CN/$TOKEN.lock"
+
+    if (( c >= MAX )); then
+      log "DENY: session limit exceeded (MAX=${MAX}, current=${c})"
+      exit 1
+    fi
+
+    # 락 파일 생성 (실패하면 경고만, AUTH_FAILED로 가지 않음)
+    : > "$BASE/$IFACE/$CN/$TOKEN.lock" 2>/dev/null || log "WARN: create lock failed $BASE/$IFACE/$CN/$TOKEN.lock"
     ;;
+
   client-disconnect)
     rm -f "$BASE/$IFACE/$CN/$TOKEN.lock" 2>/dev/null || true
     prune_stale "$BASE/$IFACE/$CN" "${EP_NOW[@]}"
     rmdir "$BASE/$IFACE/$CN" 2>/dev/null || true
     ;;
 esac
+
 exit 0
 HOOK
 chmod 755 "$HOOK_LIMIT2"
@@ -196,8 +217,8 @@ done < <(find "$LOCK_DIR" -type f -name '*.lock.gone' -print0 2>/dev/null)
 
 for key in "${!active[@]}"; do
   dir="$LOCK_DIR/$(dirname "$key")"; f="$LOCK_DIR/$key.lock"
-  install -d -m0755 -o nobody -g nogroup "$dir"
-  [[ -f "$f" ]] || install -m0644 -o nobody -g nogroup /dev/null "$f"
+  install -d -m0755 "$dir"
+  [[ -f "$f" ]] || install -m0644 /dev/null "$f"
 done
 RB
 chmod 755 "$LOCKSYNC"
@@ -206,9 +227,15 @@ tee /etc/systemd/system/mi-lock-sync.service >/dev/null <<'UNIT'
 [Unit]
 Description=Synchronize OpenVPN MI locks (rebuild + prune)
 After=network-online.target
+
 [Service]
 Type=oneshot
+User=nobody
+Group=nogroup
 ExecStart=/usr/local/sbin/mi_lock_sync.sh
+
+[Install]
+WantedBy=multi-user.target
 UNIT
 
 tee /etc/systemd/system/mi-lock-sync.timer >/dev/null <<'TMR'
@@ -362,18 +389,30 @@ apply_iface_sysctl(){
 get_pub_ifaces(){
   ip -o -4 addr show up scope global | awk '{print $2}' | while read -r nic; do
     case "$nic" in
-      lo)        continue ;;   # loopback 제외
-      tun* )     continue ;;   # tun0, tun-mi-ensXX 등 제외
-      wg-* )     continue ;;   # wg-ensXX 등 wireguard 제외
+      lo)        continue ;;
+      tun* )     continue ;;  # tun0, tun-mi-ensXX
+      wg-* )     continue ;;  # wireguard
     esac
     ip route show default dev "$nic" >/dev/null 2>&1 && echo "$nic"
   done
 }
+
 if [[ -n "$IFACES_INPUT" ]]; then
   mapfile -t IFACES < <(echo "$IFACES_INPUT" | tr ',' ' ' | xargs -n1)
 else
   mapfile -t IFACES < <(get_pub_ifaces)
 fi
+
+# tun*, wg-* 최종 필터링
+tmp_ifaces=()
+for nic in "${IFACES[@]}"; do
+  case "$nic" in
+    tun*|wg-* ) continue ;;
+  esac
+  tmp_ifaces+=("$nic")
+done
+IFACES=("${tmp_ifaces[@]}")
+
 [[ ${#IFACES[@]} -gt 0 ]] || { echo "[ERR] no iface"; exit 1; }
 apply_iface_sysctl "${IFACES[@]}"
 
@@ -403,12 +442,18 @@ systemctl daemon-reload
 
 # ===== PER-IF INSTANCE 생성 =====
 for IFDEV in "${IFACES[@]}"; do
+  # 혹시라도 tun*, wg-* 가 들어왔으면 방어적으로 스킵
+  case "$IFDEV" in
+    tun*|wg-* ) continue ;;
+  esac
+
   IFNUM=$(sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p' <<<"$IFDEV") || true
   [[ -n "$IFNUM" ]] || { echo "[WARN] $IFDEV: no number"; continue; }
+
   SRV_IP=$(ip -o -4 addr show dev "$IFDEV" | awk '/inet /{print $4}' | cut -d/ -f1 | head -n1)
   NET=$(ip route show dev "$IFDEV" | awk '/proto kernel/ {print $1; exit}')
 
-  # ---- GW 탐색: 최대 5회 재시도 ----
+  # GW 5회 재시도
   GW=""
   for _i in {1..5}; do
     GW=$(ip route show default 2>/dev/null | awk -v d="$IFDEV" '$0 ~ (" dev " d "($| )"){print $3; exit}' || true)
