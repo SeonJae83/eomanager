@@ -403,7 +403,15 @@ for IFDEV in "${IFACES[@]}"; do
   [[ -n "$IFNUM" ]] || { echo "[WARN] $IFDEV: no number"; continue; }
   SRV_IP=$(ip -o -4 addr show dev "$IFDEV" | awk '/inet /{print $4}' | cut -d/ -f1 | head -n1)
   NET=$(ip route show dev "$IFDEV" | awk '/proto kernel/ {print $1; exit}')
-  GW=$(ip route show default | awk -v d="$IFDEV" '$0 ~ (" dev " d "($| )"){print $3; exit}')
+
+  # ---- GW 탐색: 최대 5회 재시도 ----
+  GW=""
+  for _i in {1..5}; do
+    GW=$(ip route show default 2>/dev/null | awk -v d="$IFDEV" '$0 ~ (" dev " d "($| )"){print $3; exit}' || true)
+    [[ -n "$GW" ]] && break
+    sleep 1
+  done
+
   [[ -n "$SRV_IP" && -n "$GW" && -n "$NET" ]] || { echo "[WARN] $IFDEV missing ip/gw/net"; continue; }
 
   PORT=$((4100 + IFNUM)); (( PORT<=65535 )) || PORT=51194
