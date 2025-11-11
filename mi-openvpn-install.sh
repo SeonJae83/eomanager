@@ -560,10 +560,11 @@ done
 # ===== TEMPLATE DROP-INS =====
 install -d -m0755 /etc/systemd/system/openvpn-server@.service.d
 
-# 프로세스 수 제한 완화 (기본 LimitNPROC=10 -> 256)
+# 프로세스 수 제한 완화 (기본 LimitNPROC=256 -> 4096)
 tee /etc/systemd/system/openvpn-server@.service.d/99-limits.conf >/dev/null <<'EOLIM'
 [Service]
-LimitNPROC=256
+LimitNPROC=4096
+TasksMax=4096
 EOLIM
 
 tee /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf >/dev/null <<'EONP'
