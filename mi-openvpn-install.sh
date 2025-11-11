@@ -416,6 +416,26 @@ IFACES=("${tmp_ifaces[@]}")
 [[ ${#IFACES[@]} -gt 0 ]] || { echo "[ERR] no iface"; exit 1; }
 apply_iface_sysctl "${IFACES[@]}"
 
+# ===== TEMPLATE DROP-INS =====
+install -d -m0755 /etc/systemd/system/openvpn-server@.service.d
+
+# 프로세스 수 제한 완화 (기본 LimitNPROC=256 -> 4096)
+tee /etc/systemd/system/openvpn-server@.service.d/99-limits.conf >/dev/null <<'EOLIM'
+[Service]
+LimitNPROC=4096
+TasksMax=4096
+EOLIM
+
+tee /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf >/dev/null <<'EONP'
+[Service]
+ProtectHome=false
+ReadWritePaths=/home/script/openvpn/profile
+EONP
+tee /etc/systemd/system/openvpn-server@.service.d/mi-perms.conf >/dev/null <<'EONQ'
+[Service]
+PermissionsStartOnly=yes
+EONQ
+
 # ===== PKI INIT =====
 if [[ ! -d "$EASYRSA_DIR" ]]; then
   cp -r /usr/share/easy-rsa "$EASYRSA_DIR"
@@ -556,26 +576,6 @@ EON
   systemctl enable --now "openvpn-server@mi-${IFDEV}.service" || true
   echo "[OK] mi-${IFDEV}: ${SRV_IP}:${PORT} mgmt 127.0.0.1:${MPORT} subnet 10.0.${IFNUM}.0/24"
 done
-
-# ===== TEMPLATE DROP-INS =====
-install -d -m0755 /etc/systemd/system/openvpn-server@.service.d
-
-# 프로세스 수 제한 완화 (기본 LimitNPROC=256 -> 4096)
-tee /etc/systemd/system/openvpn-server@.service.d/99-limits.conf >/dev/null <<'EOLIM'
-[Service]
-LimitNPROC=4096
-TasksMax=4096
-EOLIM
-
-tee /etc/systemd/system/openvpn-server@.service.d/mi-profile-write.conf >/dev/null <<'EONP'
-[Service]
-ProtectHome=false
-ReadWritePaths=/home/script/openvpn/profile
-EONP
-tee /etc/systemd/system/openvpn-server@.service.d/mi-perms.conf >/dev/null <<'EONQ'
-[Service]
-PermissionsStartOnly=yes
-EONQ
 
 # ===== PRE WRAPPER (optional hook point) =====
 cat > "$PREWRAP" <<'PWR'
