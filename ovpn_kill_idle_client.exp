@@ -1,0 +1,111 @@
+#!/usr/bin/expect -f
+
+set timeout 5
+set idle_threshold 10
+
+# ensXX 인터페이스 리스트 생성
+set interfaces [list]
+foreach path [glob -nocomplain /sys/class/net/ens*] {
+    if {[regexp {^/sys/class/net/(ens\d+)$} $path -> name]} {
+        lappend interfaces $name
+    }
+}
+
+puts "인터페이스 목록: $interfaces"
+
+# for + lindex로 반복 처리
+set count [llength $interfaces]
+for {set i 0} {$i < $count} {incr i} {
+    set iface [lindex $interfaces $i]
+
+    # ens36 → 7360
+    if {![regexp {^ens(\d+)$} $iface -> ifnum]} {
+        puts "인터페이스 $iface 스킵 (ens+숫자 아님)"
+        continue
+    }
+
+    set port "7$ifnum"
+    append port "0"
+
+    puts "인터페이스 $iface 관리 포트 $port 처리 시작"
+
+    # OpenVPN Management 연결
+    spawn telnet 127.0.0.1 $port
+    expect {
+        "INFO:OpenVPN Management Interface" {}
+        timeout {
+            puts "인터페이스 $iface 포트 $port 연결 실패"
+            continue
+        }
+    }
+    send "status\r"
+    expect "END"
+    set output $expect_out(buffer)
+    send "exit\r"
+    expect eof
+
+    # 상태 임시 파일로 저장
+    set tmpfile "/tmp/openvpn_status_$iface.txt"
+    set fp [open $tmpfile "w"]
+    puts $fp $output
+    close $fp
+
+    # 현재 시간 추출 (TIME 항목)
+    set now -1
+    set fp [open $tmpfile "r"]
+    while {[gets $fp line] >= 0} {
+        if {[regexp {^TIME\s+.*\s+(\d+)$} $line -> ts]} {
+            set now $ts
+            break
+        }
+    }
+    close $fp
+
+    if {$now < 0} {
+        puts "인터페이스 $iface 오류: TIME 없음"
+        continue
+    }
+
+    # CLIENT_LIST 파싱 (CN + VIP → CID 매핑)
+    array unset cid_map
+    array set cid_map {}
+    set fp [open $tmpfile "r"]
+    while {[gets $fp line] >= 0} {
+        if {[regexp {^CLIENT_LIST\s+(\S+)\s+\S+\s+(\S+)\s+.*\s+(\d+)\s+\S+\s+(\d+)} $line -> cn vip connected cid]} {
+            set key "$cn|$vip"
+            set cid_map($key) $cid
+        }
+    }
+    close $fp
+
+    # ROUTING_TABLE에서 마지막 활동 시간 확인
+    set fp [open $tmpfile "r"]
+    while {[gets $fp line] >= 0} {
+        if {[regexp {^ROUTING_TABLE\s+(\S+)\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(\d+)} $line -> vip cn lastref]} {
+            set diff [expr {$now - $lastref}]
+            set key "$cn|$vip"
+
+            puts "인터페이스 $iface CN=$cn VIP=$vip Idle=${diff}초"
+
+            if {$diff > $idle_threshold} {
+                if {[info exists cid_map($key)]} {
+                    set cid $cid_map($key)
+                    puts "인터페이스 $iface IDLE 클라이언트 종료 시도: CN=$cn VIP=$vip CID=$cid"
+
+                    spawn telnet 127.0.0.1 $port
+                    expect "INFO:OpenVPN Management Interface"
+                    send "client-kill $cid\r"
+                    expect {
+                        "SUCCESS" { puts "인터페이스 $iface 종료 성공: CID=$cid" }
+                        "ERROR"   { puts "인터페이스 $iface 종료 실패: CID=$cid" }
+                    }
+                    send "exit\r"
+                    expect eof
+                } else {
+                    puts "인터페이스 $iface CID 매핑 실패: $key"
+                }
+            }
+        }
+    }
+    close $fp
+}
