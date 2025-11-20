@@ -8,6 +8,9 @@
 #  - ovpn_add_user.sh, ovpn_del.sh 원본 기능 100% 유지
 #    (deny / mgmt-kill / profile 삭제는 그대로 유지)
 #  - EasyRSA 발급 기능 정상 유지
+#  - per-instance ExecStartPost(mi_route_repair.sh) 제거
+#  - 부팅 후 60초 뒤 1회만 mi_route_repair.sh 실행하는
+#    oneshot 서비스 + 타이머 생성
 # -----------------------------------------------------------
 set -Eeuo pipefail
 trap 'echo "[ERR] line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -17,6 +20,8 @@ ACL_DIR=/etc/openvpn/acl
 HOOK_LIMIT2=/etc/openvpn/hooks-limit2.sh
 ADDUSR=/usr/local/sbin/ovpn_add_user.sh
 DELUSR=/usr/local/sbin/ovpn_del.sh
+ROUTE_ONBOOT_SVC=/etc/systemd/system/mi-route-repair-onboot.service
+ROUTE_ONBOOT_TMR=/etc/systemd/system/mi-route-repair-onboot.timer
 
 echo "=== mi-openvpn-patch-no-dup.sh 실행 ==="
 
@@ -51,6 +56,7 @@ ACL_DIR="/etc/openvpn/acl"
 
 log(){ echo "[HOOK][$IFACE][$CN] $*" >&2; }
 
+# STATUS_FILE 기반으로 인터페이스 추론
 if [[ "$IFACE" == "UNDEF" && -n "$STATUS_FILE" ]]; then
   b="$(basename "$STATUS_FILE")"
   IFACE="${b#status-mi-}"
@@ -60,16 +66,19 @@ fi
 DENY_F="$ACL_DIR/deny-${IFACE}.list"
 ALLOW_F="$ACL_DIR/allow-${IFACE}.list"
 
-if [[ -f "$ALLOW_F" ]] && ! grep -Fxq "$CN" "$ALLOW_F"; then
+# allow 우선
+if [[ -f "$ALLOW_F" ]] && ! grep -Fxq "$CN" "$ALLOW_F" 2>/dev/null; then
   log "DENY by allow-list"
   exit 1
 fi
 
-if [[ -f "$DENY_F" ]] && grep -Fxq "$CN" "$DENY_F"; then
+# deny 적용
+if [[ -f "$DENY_F" ]] && grep -Fxq "$CN" "$DENY_F" 2>/dev/null; then
   log "DENY by deny-list"
   exit 1
 fi
 
+# 동시접속 제한/락 로직 없음
 exit 0
 EOF
 
@@ -91,10 +100,10 @@ rm -rf /run/openvpn-server/locks >/dev/null 2>&1 || true
 
 
 # -----------------------------------------------------------
-# 4) ADD/DEL 스크립트 → 원래 기능 유지 + lock 관련 부분만 제거
-#    (EasyRSA 발급 / deny / mgmt-kill / profile 삭제는 그대로 유지)
+# 4) ADD/DEL 스크립트 덮어쓰기
+#    - EasyRSA 발급 / deny / mgmt-kill / profile 삭제 유지
+#    - lock 관련 코드 없음
 # -----------------------------------------------------------
-
 echo "=== 4) ADD/DEL 스크립트 덮어쓰기 ==="
 
 # ---------------------- ADD ----------------------
@@ -211,19 +220,75 @@ chmod 755 "$DELUSR"
 
 
 # -----------------------------------------------------------
-# 5) 서비스 리로드 & 재시작
+# 5) per-instance ExecStartPost(mi_route_repair.sh) 제거
+#    - 설치 스크립트가 만든 mi-route.conf drop-in 삭제
 # -----------------------------------------------------------
-echo "=== 5) systemd reload + 인스턴스 재시작 ==="
+echo "=== 5) per-instance ExecStartPost(mi_route_repair.sh) 제거 ==="
+
+shopt -s nullglob
+for D in /etc/systemd/system/openvpn-server@mi-*.service.d; do
+  if [[ -f "$D/mi-route.conf" ]]; then
+    echo " - 삭제: $D/mi-route.conf"
+    rm -f "$D/mi-route.conf"
+  fi
+done
+shopt -u nullglob
+
+
+# -----------------------------------------------------------
+# 6) 부팅 후 60초 뒤 1회만 mi_route_repair.sh 실행하는
+#    oneshot 서비스 + 타이머 생성
+# -----------------------------------------------------------
+echo "=== 6) mi-route-repair-onboot.service / .timer 생성 ==="
+
+cat > "$ROUTE_ONBOOT_SVC" <<'EOF'
+[Unit]
+Description=Run mi_route_repair.sh once after boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mi_route_repair.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$ROUTE_ONBOOT_TMR" <<'EOF'
+[Unit]
+Description=Delay 60 seconds and run mi_route_repair.sh once after boot
+
+[Timer]
+OnBootSec=60s
+AccuracySec=10s
+Unit=mi-route-repair-onboot.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+
+# -----------------------------------------------------------
+# 7) systemd reload + 타이머 활성화 + OpenVPN 인스턴스 재시작
+# -----------------------------------------------------------
+echo "=== 7) systemd reload + 타이머 활성화 + 인스턴스 재시작 ==="
+
 systemctl daemon-reload
 
+# 타이머 활성화
+systemctl enable --now mi-route-repair-onboot.timer >/dev/null 2>&1 || true
+
+# 모든 mi- 인스턴스 재시작
 for SVC in $(systemctl list-units --type=service --all | awk '/openvpn-server@mi-/{print $1}'); do
   echo " - 재시작: $SVC"
   systemctl restart "$SVC" || true
 done
 
 echo "=== 패치 완료 ==="
-echo " - 동시접속 제한(lock) 완전 제거"
-echo " - hooks-limit2.sh → ACL 전용"
-echo " - ADD/DEL 기능 100% 정상"
-echo " - EasyRSA 발급 정상"
-echo " - mgmt-kill 정상"
+echo " - duplicate-cn 제거"
+echo " - 동시접속 lock/mi-lock-sync 완전 제거"
+echo " - hooks-limit2.sh → ACL 전용 훅"
+echo " - ovpn_add_user / ovpn_del 기능 + EasyRSA 발급 + mgmt-kill 유지"
+echo " - per-instance ExecStartPost(mi_route_repair.sh) 제거"
+echo " - 부팅 후 60초 뒤 1회만 mi_route_repair.sh 실행"
