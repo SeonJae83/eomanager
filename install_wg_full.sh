@@ -160,7 +160,6 @@ ${PEERS}
 CFG
   wg-quick strip "$TMP" >/dev/null        # 유효성 체크만
   install -m 600 "$TMP" "$CONF"; rm -rf "$TMPDIR"
-  systemctl enable "wg-quick@${IFACE}" >/dev/null
   systemctl restart "wg-quick@${IFACE}"
 
   local CUR; CUR="$(ip -4 -o addr show dev "${NIC}" | awk '{split($4,a,"/");print a[1]}')"
