@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>법인 파산선고 및 파산관재인 선임 안내</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #6500eb 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            overflow: hidden;
+        }
+        
+        .container {
+            background: white;
+            max-width: 1200px;
+            width: 100%;
+            height: 95vh;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #2d3748 0%, #1a202c 100%);
+            color: white;
+            padding: 25px 30px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        
+        .header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        
+        .header p {
+            font-size: 13px;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 25px 30px;
+            flex: 1;
+            overflow-y: auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .intro {
+            grid-column: 1 / -1;
+            margin-bottom: 0;
+            line-height: 1.6;
+            color: #2d3748;
+            font-size: 13px;
+            background: #f7fafc;
+            padding: 20px;
+            border-radius: 12px;
+        }
+        
+        .section {
+            margin-bottom: 0;
+            background: #f7fafc;
+            border-radius: 12px;
+            padding: 20px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .section-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .section-title::before {
+            content: "■";
+            color: #667eea;
+            margin-right: 10px;
+            font-size: 20px;
+        }
+        
+        .info-table {
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .info-row {
+            display: flex;
+            border-bottom: 1px solid #e2e8f0;
+            transition: background 0.2s;
+        }
+        
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        
+        .info-row:hover {
+            background: #f7fafc;
+        }
+        
+        .info-label {
+            flex: 0 0 130px;
+            padding: 12px 15px;
+            background: #edf2f7;
+            font-weight: 600;
+            color: #4a5568;
+            font-size: 12px;
+        }
+        
+        .info-value {
+            flex: 1;
+            padding: 12px 15px;
+            color: #2d3748;
+            font-size: 12px;
+        }
+        
+        .description {
+            line-height: 1.6;
+            color: #4a5568;
+            font-size: 12px;
+            margin-top: 12px;
+        }
+        
+        .highlight {
+            background: #fff5f5;
+            border-left: 3px solid #fc8181;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 12px;
+        }
+        
+        .highlight p {
+            color: #742a2a;
+            line-height: 1.6;
+            font-size: 12px;
+        }
+        
+        .footer {
+            background: #f7fafc;
+            padding: 20px 30px;
+            text-align: center;
+            border-top: 2px solid #e2e8f0;
+            flex-shrink: 0;
+        }
+        
+        .footer p {
+            color: #4a5568;
+            line-height: 1.6;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+        
+        .company-name {
+            font-weight: 700;
+            color: #2d3748;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        
+        @media (max-width: 640px) {
+            .header h1 {
+                font-size: 20px;
+            }
+            
+            .content {
+                padding: 30px 20px;
+            }
+            
+            .section {
+                padding: 20px;
+            }
+            
+            .info-row {
+                flex-direction: column;
+            }
+            
+            .info-label {
+                flex: none;
+                border-bottom: 1px solid #e2e8f0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>법인 파산선고 및 파산관재인 선임 안내</h1>
+            <p>주식회사 와이즈알앤디</p>
+        </div>
+        
+        <div class="content">
+            <div class="intro">
+                안녕하세요, 주식회사 와이즈알앤디입니다.<br>
+                당사는 경영 악화로 인하여 법원에 법인파산을 신청하였으며,<br>
+                아래와 같이 법인파산선고 및 파산관재인 선임이 완료되었음을 안내드립니다.
+            </div>
+            
+            <div class="section">
+                <div class="section-title">파산사건 정보</div>
+                <div class="info-table">
+                    <div class="info-row">
+                        <div class="info-label">관할법원</div>
+                        <div class="info-value">수원지방법원</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">사건번호</div>
+                        <div class="info-value">2025하합577</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">파산선고일</div>
+                        <div class="info-value">2025년 12월 22일</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">파산관재인</div>
+                        <div class="info-value">유성연 변호사</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">관재인 연락처</div>
+                        <div class="info-value">031-211-6420</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <div class="section-title">환불 및 채권 관련 안내</div>
+                <div class="description">
+                    파산선고 이후 당사의 모든 재산 및 채권·채무 관계는 파산관재인을 통해 법원 절차에 따라 처리됩니다.
+                </div>
+                <div class="highlight">
+                    <p>미이용 금액, 환불, 기타 채권 관련 사항은 개별 대응이 불가하며, 채권자 신고 절차를 통해 진행해 주시기 바랍니다.</p>
+                </div>
+            </div>
+            
+            <div class="section">
+                <div class="section-title">개인정보 처리 안내</div>
+                <div class="description">
+                    고객 개인정보는 관계 법령에 따라 파산관재인의 관리 하에 안전하게 보관되며, 법정 보관 기간 경과 후 파기됩니다.
+                </div>
+            </div>
+            
+            <div class="section">
+                <div class="section-title">기타 안내</div>
+                <div class="description">
+                    사이트에 삽입된 두유애드 스크립트는 제거해 주시기 바랍니다.
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>갑작스러운 파산으로 불편을 드린 점 깊이 사과드리며,</p>
+            <p>그동안 서비스를 이용해 주신 모든 분들께 진심으로 감사드립니다.</p>
+            <p class="company-name">주식회사 와이즈알앤디</p>
+        </div>
+    </div>
+</body>
+</html>
