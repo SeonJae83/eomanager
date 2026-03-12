@@ -289,6 +289,7 @@ chmod 755 "$FINDUSR"
 # ===== RP_FILTER =====
 apply_iface_sysctl(){
   : > /etc/sysctl.d/99-mi-openvpn-ifaces.conf
+  echo "net.ipv4.ip_forward=1" >> /etc/sysctl.d/99-mi-openvpn-ifaces.conf
   for ifc in "$@"; do
     printf 'net.ipv4.conf.%s.rp_filter=2\n' "$ifc" >> /etc/sysctl.d/99-mi-openvpn-ifaces.conf
     printf 'net.ipv4.conf.tun-mi-%s.rp_filter=2\n' "$ifc" >> /etc/sysctl.d/99-mi-openvpn-ifaces.conf
